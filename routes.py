@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 
-ROUTES_FILE = "subway_metadata/routes.csv"
+ROUTES_FILE = "subway_metadata/routes.txt"
 
 class Routes:
 

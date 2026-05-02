@@ -40,3 +40,7 @@ def stops():
 def routes():
   routes = Routes().routes
   return jsonify(routes)
+
+if __name__ == "__main__":
+    import bjoern
+    bjoern.run(app, "0.0.0.0", 5280)
