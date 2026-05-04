@@ -44,9 +44,17 @@ class Stations:
   @classmethod
   def format_routes(cls, routes):
     """Format a set of route_ids as a sorted string like '2345ACJZ'."""
+    # Collapse express lines: remove 'X' suffix from routes ending with 'X'
+    processed_routes = set()
+    for r in routes:
+      if r.endswith('X'):
+        processed_routes.add(r[:-1])
+      else:
+        processed_routes.add(r)
+    
     # Sort numerics first, then alphabetics
-    numeric = sorted([r for r in routes if r.isdigit()])
-    alpha = sorted([r for r in routes if not r.isdigit()])
+    numeric = sorted([r for r in processed_routes if r.isdigit()])
+    alpha = sorted([r for r in processed_routes if not r.isdigit()])
     return ''.join(numeric + alpha)
 
   def get_stations(self):
