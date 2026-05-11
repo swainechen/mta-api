@@ -2,7 +2,7 @@ import time
 
 from flask import Flask, jsonify
 from flask_cors import CORS
-from markupsafe import escape 
+from markupsafe import escape
 
 from times import Times
 from stations import Stations
@@ -12,34 +12,75 @@ from routes import Routes
 app = Flask(__name__)
 CORS(app)
 
+
 @app.route('/')
 def homepage1():
-  return 'Welcome to SubwayApi'
+    return 'Welcome to SubwayApi'
+
 
 @app.route('/api/')
 def homepage2():
-  return 'Welcome to SubwayApi'
+    return 'Welcome to SubwayApi'
+
 
 @app.route('/api/train_times/')
 def train_times():
-  trains = Times().train_times
-  return jsonify(trains)
+    """Get arrival times for all subway stations."""
+    trains = Times().train_times
+    return jsonify(trains)
+
+
+@app.route('/api/ferry_times/')
+def ferry_times():
+    """Get arrival times for all ferry stations."""
+    ferry = Times().ferry_times
+    return jsonify(ferry)
+
+
+@app.route('/api/times/')
+def all_times():
+    """Get arrival times for all stations (subway + ferry)."""
+    times = Times().get_all_times()
+    return jsonify(times)
+
 
 @app.route('/api/train_times/<station_id>')
 def nextTrains(station_id):
-  times = Times().train_times
-  station_route = list(filter(lambda station: station['station_id'] == int(station_id), times))
-  return jsonify(station_route)
+    """Get arrival times for a specific subway station."""
+    times = Times().train_times
+    station_route = list(filter(lambda station: station['station_id'] == station_id, times))
+    return jsonify(station_route)
+
+
+@app.route('/api/ferry_times/<station_id>')
+def nextFerry(station_id):
+    """Get arrival times for a specific ferry station."""
+    times = Times().ferry_times
+    station_route = list(filter(lambda station: station['station_id'] == station_id, times))
+    return jsonify(station_route)
+
+
+@app.route('/api/times/<station_id>')
+def nextAll(station_id):
+    """Get arrival times for a specific station (subway or ferry)."""
+    times = Times().get_all_times()
+    station_route = list(filter(lambda station: station['station_id'] == station_id, times))
+    return jsonify(station_route)
+
 
 @app.route('/api/stations/')
 def stops():
-  stations = Stations().stations
-  return jsonify(stations)
+    """Get all stations (subway + ferry)."""
+    stations = Stations().stations
+    return jsonify(stations)
+
 
 @app.route('/api/routes/')
 def routes():
-  routes = Routes().routes
-  return jsonify(routes)
+    """Get all routes (subway + ferry)."""
+    routes = Routes().routes
+    return jsonify(routes)
+
 
 if __name__ == "__main__":
     import bjoern
