@@ -4,6 +4,9 @@ import pandas as pd
 # Global caches
 _ferry_trip_route_map = None
 _ferry_stop_to_routes = None
+_ferry_trip_metadata = None
+_ferry_stop_times_by_trip = None
+_ferry_stop_names = None
 
 
 def get_ferry_trip_route_map():
@@ -28,6 +31,113 @@ def get_ferry_stop_to_routes():
     stop_times_with_trips = stop_times_df.merge(trips_df, on='trip_id')
     _ferry_stop_to_routes = stop_times_with_trips.groupby('stop_id')['route_id'].apply(set).to_dict()
     return _ferry_stop_to_routes
+
+
+def get_ferry_trip_metadata():
+    """Build a mapping from trip_id to ferry trip metadata."""
+    global _ferry_trip_metadata
+    if _ferry_trip_metadata is not None:
+        return _ferry_trip_metadata
+
+    trips_df = pd.read_csv('ferry_metadata/trips.txt', dtype=str)
+    _ferry_trip_metadata = trips_df.set_index('trip_id')[['direction_id', 'trip_headsign']].to_dict('index')
+    return _ferry_trip_metadata
+
+
+def get_ferry_stop_name_map():
+    """Build a mapping from ferry stop_id to stop_name."""
+    global _ferry_stop_names
+    if _ferry_stop_names is not None:
+        return _ferry_stop_names
+
+    stops_df = pd.read_csv('ferry_metadata/stops.txt', dtype=str)
+    _ferry_stop_names = stops_df.set_index('stop_id')['stop_name'].to_dict()
+    return _ferry_stop_names
+
+
+def get_ferry_stops_by_trip():
+    """Build an ordered stop sequence for each ferry trip."""
+    global _ferry_stop_times_by_trip
+    if _ferry_stop_times_by_trip is not None:
+        return _ferry_stop_times_by_trip
+
+    stop_times_df = pd.read_csv(
+        'ferry_metadata/stop_times.txt',
+        usecols=['trip_id', 'stop_id', 'stop_sequence'],
+        dtype=str
+    )
+    stop_times_df['stop_sequence'] = stop_times_df['stop_sequence'].astype(int)
+    sorted_times = stop_times_df.sort_values(['trip_id', 'stop_sequence'])
+    _ferry_stop_times_by_trip = sorted_times.groupby('trip_id').apply(
+        lambda df: df[['stop_id', 'stop_sequence']].to_dict('records')
+    ).to_dict()
+    return _ferry_stop_times_by_trip
+
+
+def get_ferry_direction_id(entity):
+    """Get ferry direction_id from the feed entity or ferry trip metadata."""
+    if 'tripUpdate' in entity and 'trip' in entity['tripUpdate']:
+        trip = entity['tripUpdate']['trip']
+        direction_id = trip.get('directionId')
+        if direction_id in ('0', '1'):
+            return direction_id
+        trip_id = trip.get('tripId')
+        if trip_id:
+            metadata = get_ferry_trip_metadata()
+            trip_meta = metadata.get(trip_id)
+            if trip_meta:
+                return trip_meta.get('direction_id')
+    return None
+
+
+def get_ferry_direction(entity):
+    """Map ferry direction_id to ferry direction symbols for the app."""
+    direction_id = get_ferry_direction_id(entity)
+    if direction_id == '1':
+        return 'I'
+    if direction_id == '0':
+        return 'O'
+    return None
+
+
+def get_ferry_trip_headsign(entity):
+    """Get a ferry trip headsign from the feed entity or metadata."""
+    if 'tripUpdate' in entity and 'trip' in entity['tripUpdate']:
+        trip = entity['tripUpdate']['trip']
+        headsign = trip.get('tripHeadsign') or trip.get('trip_headsign')
+        if headsign:
+            return headsign
+        trip_id = trip.get('tripId')
+        if trip_id:
+            metadata = get_ferry_trip_metadata()
+            trip_meta = metadata.get(trip_id)
+            if trip_meta:
+                return trip_meta.get('trip_headsign')
+    return None
+
+
+def get_ferry_next_stop(entity, current_stop_id):
+    """Get the next stop name for a ferry trip if available."""
+    if 'tripUpdate' not in entity or 'trip' not in entity['tripUpdate']:
+        return None
+
+    trip_id = entity['tripUpdate']['trip'].get('tripId')
+    if not trip_id or current_stop_id is None:
+        return None
+
+    stops_by_trip = get_ferry_stops_by_trip().get(trip_id)
+    if not stops_by_trip:
+        return None
+
+    for index, stop_entry in enumerate(stops_by_trip):
+        if stop_entry['stop_id'] == current_stop_id:
+            if index + 1 < len(stops_by_trip):
+                stop_name_map = get_ferry_stop_name_map()
+                next_stop_id = stops_by_trip[index + 1]['stop_id']
+                return stop_name_map.get(next_stop_id)
+            break
+
+    return None
 
 
 def get_route_id(entity):

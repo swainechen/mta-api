@@ -2,7 +2,15 @@ import time
 from itertools import chain
 
 from feed_parser import FeedParser
-from utils import get_updates, get_route_id, get_source, infer_ferry_route_from_stop
+from utils import (
+    get_updates,
+    get_route_id,
+    get_source,
+    infer_ferry_route_from_stop,
+    get_ferry_direction,
+    get_ferry_next_stop,
+    get_ferry_trip_headsign
+)
 from stations import Stations
 
 MAX_TIME_DIFFERENCE = 1800
@@ -36,18 +44,23 @@ class Times:
             if source == 'ferry' and route_id is None:
                 route_id = infer_ferry_route_from_stop(entity)
 
-            # For subway, get direction from stop_id; for ferry, direction is always 'N' (no direction)
             if source == 'subway':
                 direction = stop_id_raw[-1]
+                next_stop = None
+                terminal = None
             else:
-                direction = 'N'  # Ferry doesn't have N/S suffix
+                direction = get_ferry_direction(entity) or 'N'
+                next_stop = get_ferry_next_stop(entity, stopId)
+                terminal = get_ferry_trip_headsign(entity)
 
             times.append({
                 'stop_id': stopId,
                 'route_id': route_id,
                 'direction': direction,
                 'time': time_difference,
-                'source': source
+                'source': source,
+                'next_stop': next_stop,
+                'terminal': terminal
             })
         return times
 
