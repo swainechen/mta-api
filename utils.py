@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 import pandas as pd
 
 # Global caches
@@ -60,16 +60,27 @@ def get_ferry_stops_by_trip():
     global _ferry_stop_times_by_trip
     if _ferry_stop_times_by_trip is not None:
         return _ferry_stop_times_by_trip
-
     stop_times_df = pd.read_csv(
         'ferry_metadata/stop_times.txt',
-        usecols=['trip_id', 'stop_id', 'stop_sequence'],
+        usecols=['trip_id', 'stop_id', 'stop_sequence', 'arrival_time'],
         dtype=str
     )
+    # Parse stop_sequence and arrival_time into numeric values
     stop_times_df['stop_sequence'] = stop_times_df['stop_sequence'].astype(int)
+
+    def _time_to_seconds(t):
+        try:
+            parts = t.split(':')
+            h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
+            return h * 3600 + m * 60 + s
+        except Exception:
+            return None
+
+    stop_times_df['arrival_seconds'] = stop_times_df['arrival_time'].apply(_time_to_seconds)
     sorted_times = stop_times_df.sort_values(['trip_id', 'stop_sequence'])
+    # Include arrival_seconds so callers can compute offsets between stops
     _ferry_stop_times_by_trip = sorted_times.groupby('trip_id').apply(
-        lambda df: df[['stop_id', 'stop_sequence']].to_dict('records')
+        lambda df: df[['stop_id', 'stop_sequence', 'arrival_seconds']].to_dict('records')
     ).to_dict()
     return _ferry_stop_times_by_trip
 

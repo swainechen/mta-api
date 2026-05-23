@@ -9,7 +9,9 @@ from utils import (
     infer_ferry_route_from_stop,
     get_ferry_direction,
     get_ferry_next_stop,
-    get_ferry_trip_headsign
+    get_ferry_trip_headsign,
+    get_ferry_stops_by_trip,
+    get_ferry_stop_name_map
 )
 from stations import Stations
 
@@ -50,18 +52,71 @@ class Times:
                 terminal = None
             else:
                 direction = get_ferry_direction(entity) or 'N'
-                next_stop = get_ferry_next_stop(entity, stopId)
                 terminal = get_ferry_trip_headsign(entity)
 
-            times.append({
-                'stop_id': stopId,
-                'route_id': route_id,
-                'direction': direction,
-                'time': time_difference,
-                'source': source,
-                'next_stop': next_stop,
-                'terminal': terminal
-            })
+                # Try to expand a single ferry update into predicted times for downstream stops
+                trip = entity.get('tripUpdate', {}).get('trip', {})
+                trip_id = trip.get('tripId')
+                if trip_id:
+                    stops_by_trip = get_ferry_stops_by_trip().get(trip_id)
+                else:
+                    stops_by_trip = None
+
+                if stops_by_trip:
+                    # Find current stop index
+                    current_index = None
+                    for idx, s in enumerate(stops_by_trip):
+                        if s.get('stop_id') == stopId:
+                            current_index = idx
+                            break
+
+                    if current_index is not None:
+                        current_arrival = stops_by_trip[current_index].get('arrival_seconds') or 0
+                        stop_name_map = get_ferry_stop_name_map()
+                        # For current and downstream stops, compute predicted time using scheduled offsets
+                        for j in range(current_index, len(stops_by_trip)):
+                            s_entry = stops_by_trip[j]
+                            delta = (s_entry.get('arrival_seconds') or 0) - current_arrival
+                            predicted = time_difference + delta
+                            if predicted is not None and predicted > 0 and predicted < MAX_TIME_DIFFERENCE:
+                                next_stop_name = None
+                                if j + 1 < len(stops_by_trip):
+                                    next_stop_id = stops_by_trip[j + 1].get('stop_id')
+                                    next_stop_name = stop_name_map.get(next_stop_id)
+
+                                times.append({
+                                    'stop_id': s_entry.get('stop_id'),
+                                    'route_id': route_id,
+                                    'direction': direction,
+                                    'time': predicted,
+                                    'source': source,
+                                    'next_stop': next_stop_name,
+                                    'terminal': terminal
+                                })
+                    else:
+                        # Fall back to adding only the current stop if mapping not found
+                        next_stop = get_ferry_next_stop(entity, stopId)
+                        times.append({
+                            'stop_id': stopId,
+                            'route_id': route_id,
+                            'direction': direction,
+                            'time': time_difference,
+                            'source': source,
+                            'next_stop': next_stop,
+                            'terminal': terminal
+                        })
+                else:
+                    # No trip stop metadata available; add only the current stop
+                    next_stop = get_ferry_next_stop(entity, stopId)
+                    times.append({
+                        'stop_id': stopId,
+                        'route_id': route_id,
+                        'direction': direction,
+                        'time': time_difference,
+                        'source': source,
+                        'next_stop': next_stop,
+                        'terminal': terminal
+                    })
         return times
 
     def process_entity(self, entity, times, source='subway'):
