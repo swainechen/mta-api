@@ -51,6 +51,15 @@ class Times:
                 direction = stop_id_raw[-1]
                 next_stop = None
                 terminal = None
+                times.append({
+                    'stop_id': stopId,
+                    'route_id': route_id,
+                    'direction': direction,
+                    'time': time_difference,
+                    'source': source,
+                    'next_stop': next_stop,
+                    'terminal': terminal
+                })
             else:
                 direction = get_ferry_direction(entity) or 'N'
                 terminal = get_ferry_trip_headsign(entity)
