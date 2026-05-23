@@ -226,3 +226,42 @@ def infer_ferry_route_from_stop(entity):
         return list(routes)[0]
 
     return None
+
+
+def get_ferry_subroute(entity):
+    """Detect ferry subroute variant (e.g., ERA or ERB) from trip headsign or metadata.
+
+    Returns a more specific route id like 'ERA' or 'ERB' when available, otherwise `None`.
+    """
+    import re
+
+    def _extract_from_headsign(headsign):
+        if not headsign:
+            return None
+        # Look for patterns like '(E R A)', 'E R A', 'ERA', 'ER A', 'ERB', etc.
+        m = re.search(r'\(\s*E\s*R\s*([AB])\s*\)', headsign, re.I)
+        if not m:
+            m = re.search(r'\bER\s*([AB])\b', headsign, re.I)
+        if m:
+            return 'ER' + m.group(1).upper()
+        return None
+
+    # First try the realtime trip headsign
+    if 'tripUpdate' in entity and 'trip' in entity['tripUpdate']:
+        trip = entity['tripUpdate']['trip']
+        headsign = trip.get('tripHeadsign') or trip.get('trip_headsign')
+        variant = _extract_from_headsign(headsign)
+        if variant:
+            return variant
+
+        # Fall back to metadata for the tripId
+        trip_id = trip.get('tripId')
+        if trip_id:
+            metadata = get_ferry_trip_metadata()
+            trip_meta = metadata.get(trip_id)
+            if trip_meta:
+                variant = _extract_from_headsign(trip_meta.get('trip_headsign'))
+                if variant:
+                    return variant
+
+    return None

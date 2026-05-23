@@ -11,6 +11,7 @@ from utils import (
     get_ferry_next_stop,
     get_ferry_trip_headsign,
     get_ferry_stops_by_trip,
+    get_ferry_subroute,
     get_ferry_stop_name_map
 )
 from stations import Stations
@@ -74,6 +75,9 @@ class Times:
                         current_arrival = stops_by_trip[current_index].get('arrival_seconds') or 0
                         stop_name_map = get_ferry_stop_name_map()
                         # For current and downstream stops, compute predicted time using scheduled offsets
+                        # Determine if there's a more specific subroute (ERA/ERB)
+                        subroute = get_ferry_subroute(entity)
+
                         for j in range(current_index, len(stops_by_trip)):
                             s_entry = stops_by_trip[j]
                             delta = (s_entry.get('arrival_seconds') or 0) - current_arrival
@@ -83,10 +87,11 @@ class Times:
                                 if j + 1 < len(stops_by_trip):
                                     next_stop_id = stops_by_trip[j + 1].get('stop_id')
                                     next_stop_name = stop_name_map.get(next_stop_id)
+                                display_route = subroute if subroute is not None else route_id
 
                                 times.append({
                                     'stop_id': s_entry.get('stop_id'),
-                                    'route_id': route_id,
+                                    'route_id': display_route,
                                     'direction': direction,
                                     'time': predicted,
                                     'source': source,

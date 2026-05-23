@@ -5,7 +5,10 @@ ROUTES_FILE = "subway_metadata/routes.txt"
 # Ferry routes - these are displayed as "lines" similar to subway lines
 FERRY_ROUTES = [
     {'route_id': 'AS', 'color': 'FF6B00', 'name': 'Astoria'},
+    # East River has split variants (ERA, ERB). Include subroutes so UI can show them
     {'route_id': 'ER', 'color': '00839C', 'name': 'East River'},
+    {'route_id': 'ERA', 'color': '00839C', 'name': 'East River A'},
+    {'route_id': 'ERB', 'color': '00839C', 'name': 'East River B'},
     {'route_id': 'RES', 'color': '00A1E1', 'name': 'Rockaway East'},
     {'route_id': 'RS', 'color': '4E008E', 'name': 'Rockaway-Soundview'},
     {'route_id': 'RW', 'color': 'B218AA', 'name': 'Rockaway'},
