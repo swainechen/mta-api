@@ -3,7 +3,6 @@ import requests
 from google.transit import gtfs_realtime_pb2
 from google.protobuf.json_format import MessageToDict
 from dotenv import load_dotenv
-import os
 
 load_dotenv()
 
@@ -17,7 +16,14 @@ def get_feed(url):
     return MessageToDict(feed)
 
 def get_ferry_feed():
-    """Get a single feed from a URL."""
+    """Get a single ferry feed from the URL, unless a debug file is explicitly configured."""
+    debug_path = os.getenv('FERRY_FEED_FILE')
+    if debug_path:
+        with open(debug_path, 'rb') as f:
+            feed = gtfs_realtime_pb2.FeedMessage()
+            feed.ParseFromString(f.read())
+            return MessageToDict(feed)
+
     url = "http://nycferry.connexionz.net/rtt/public/utility/gtfsrealtime.aspx/tripupdate"
     feed = gtfs_realtime_pb2.FeedMessage()
     response = requests.get(url)

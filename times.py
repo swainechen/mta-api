@@ -61,7 +61,7 @@ class Times:
                     'terminal': terminal
                 })
             else:
-                direction = get_ferry_direction(entity) or 'N'
+                direction = get_ferry_direction(entity)
                 terminal = get_ferry_trip_headsign(entity)
 
                 # Try to expand a single ferry update into predicted times for downstream stops

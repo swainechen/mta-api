@@ -220,12 +220,19 @@ def infer_ferry_route_from_stop(entity):
 
     stop_to_routes = get_ferry_stop_to_routes()
     routes = stop_to_routes.get(stop_id, set())
+    if not routes:
+        return None
 
-    # Return the first route if there are multiple
-    if routes:
-        return list(routes)[0]
+    # Prefer generic ER if the stop supports East River service before falling back.
+    if 'ER' in routes:
+        return 'ER'
 
-    return None
+    preferred = ['ERA', 'ERB', 'AS', 'SB', 'RS', 'RW', 'RWS', 'RES', 'SG']
+    for route in preferred:
+        if route in routes:
+            return route
+
+    return sorted(routes)[0]
 
 
 def get_ferry_subroute(entity):
