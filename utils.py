@@ -9,13 +9,24 @@ _ferry_stop_times_by_trip = None
 _ferry_stop_names = None
 
 
+def normalize_string(value):
+    """Normalize raw string values from feed or CSV metadata."""
+    if value is None:
+        return None
+    normalized = str(value).strip().strip('"')
+    return normalized if normalized != '' else None
+
+
 def get_ferry_trip_route_map():
     """Build a mapping from trip_id to route_id for ferry routes."""
     global _ferry_trip_route_map
     if _ferry_trip_route_map is not None:
         return _ferry_trip_route_map
 
-    trips_df = pd.read_csv('ferry_metadata/trips.txt', dtype={'trip_id': str, 'route_id': str})
+    trips_df = pd.read_csv('ferry_metadata/trips.txt', dtype=str)
+    # Strip quotes and spacing added by raw static metadata files
+    trips_df['trip_id'] = trips_df['trip_id'].str.strip('"').str.strip()
+    trips_df['route_id'] = trips_df['route_id'].str.strip('"').str.strip()
     _ferry_trip_route_map = trips_df.set_index('trip_id')['route_id'].to_dict()
     return _ferry_trip_route_map
 
@@ -26,8 +37,12 @@ def get_ferry_stop_to_routes():
     if _ferry_stop_to_routes is not None:
         return _ferry_stop_to_routes
 
-    stop_times_df = pd.read_csv('ferry_metadata/stop_times.txt', dtype={'stop_id': str, 'trip_id': str})
-    trips_df = pd.read_csv('ferry_metadata/trips.txt', dtype={'trip_id': str, 'route_id': str})
+    stop_times_df = pd.read_csv('ferry_metadata/stop_times.txt', dtype=str)
+    trips_df = pd.read_csv('ferry_metadata/trips.txt', dtype=str)
+    stop_times_df['stop_id'] = stop_times_df['stop_id'].str.strip('"').str.strip()
+    stop_times_df['trip_id'] = stop_times_df['trip_id'].str.strip('"').str.strip()
+    trips_df['trip_id'] = trips_df['trip_id'].str.strip('"').str.strip()
+    trips_df['route_id'] = trips_df['route_id'].str.strip('"').str.strip()
     stop_times_with_trips = stop_times_df.merge(trips_df, on='trip_id')
     _ferry_stop_to_routes = stop_times_with_trips.groupby('stop_id')['route_id'].apply(set).to_dict()
     return _ferry_stop_to_routes
@@ -40,6 +55,9 @@ def get_ferry_trip_metadata():
         return _ferry_trip_metadata
 
     trips_df = pd.read_csv('ferry_metadata/trips.txt', dtype=str)
+    trips_df['trip_id'] = trips_df['trip_id'].str.strip('"').str.strip()
+    trips_df['direction_id'] = trips_df['direction_id'].str.strip('"').str.strip()
+    trips_df['trip_headsign'] = trips_df['trip_headsign'].str.strip('"').str.strip()
     _ferry_trip_metadata = trips_df.set_index('trip_id')[['direction_id', 'trip_headsign']].to_dict('index')
     return _ferry_trip_metadata
 
@@ -51,6 +69,8 @@ def get_ferry_stop_name_map():
         return _ferry_stop_names
 
     stops_df = pd.read_csv('ferry_metadata/stops.txt', dtype=str)
+    stops_df['stop_id'] = stops_df['stop_id'].str.strip('"').str.strip()
+    stops_df['stop_name'] = stops_df['stop_name'].str.strip('"').str.strip()
     _ferry_stop_names = stops_df.set_index('stop_id')['stop_name'].to_dict()
     return _ferry_stop_names
 
@@ -65,6 +85,8 @@ def get_ferry_stops_by_trip():
         usecols=['trip_id', 'stop_id', 'stop_sequence', 'arrival_time'],
         dtype=str
     )
+    stop_times_df['trip_id'] = stop_times_df['trip_id'].str.strip('"').str.strip()
+    stop_times_df['stop_id'] = stop_times_df['stop_id'].str.strip('"').str.strip()
     # Parse stop_sequence and arrival_time into numeric values
     stop_times_df['stop_sequence'] = stop_times_df['stop_sequence'].astype(int)
 
@@ -89,13 +111,13 @@ def get_ferry_direction_id(entity):
     """Get ferry direction_id from the feed entity or ferry trip metadata."""
     if 'tripUpdate' in entity and 'trip' in entity['tripUpdate']:
         trip = entity['tripUpdate']['trip']
-        direction_id = trip.get('directionId')
+        direction_id = trip.get('directionId') or trip.get('direction_id')
         if direction_id in ('0', '1'):
-            return direction_id
+            return str(direction_id)
         trip_id = trip.get('tripId')
         if trip_id:
             metadata = get_ferry_trip_metadata()
-            trip_meta = metadata.get(trip_id)
+            trip_meta = metadata.get(normalize_string(trip_id))
             if trip_meta:
                 return trip_meta.get('direction_id')
     return None
@@ -121,7 +143,7 @@ def get_ferry_trip_headsign(entity):
         trip_id = trip.get('tripId')
         if trip_id:
             metadata = get_ferry_trip_metadata()
-            trip_meta = metadata.get(trip_id)
+            trip_meta = metadata.get(normalize_string(trip_id))
             if trip_meta:
                 return trip_meta.get('trip_headsign')
     return None
@@ -136,12 +158,12 @@ def get_ferry_next_stop(entity, current_stop_id):
     if not trip_id or current_stop_id is None:
         return None
 
-    stops_by_trip = get_ferry_stops_by_trip().get(trip_id)
+    stops_by_trip = get_ferry_stops_by_trip().get(normalize_string(trip_id))
     if not stops_by_trip:
         return None
 
     for index, stop_entry in enumerate(stops_by_trip):
-        if stop_entry['stop_id'] == current_stop_id:
+        if normalize_string(stop_entry.get('stop_id')) == normalize_string(current_stop_id):
             if index + 1 < len(stops_by_trip):
                 stop_name_map = get_ferry_stop_name_map()
                 next_stop_id = stops_by_trip[index + 1]['stop_id']
@@ -162,7 +184,7 @@ def get_route_id(entity):
         trip_id = entity["tripUpdate"]["trip"].get("tripId")
         if trip_id:
             ferry_map = get_ferry_trip_route_map()
-            return ferry_map.get(trip_id)
+            return ferry_map.get(normalize_string(trip_id))
 
     return None
 
@@ -265,10 +287,25 @@ def get_ferry_subroute(entity):
         trip_id = trip.get('tripId')
         if trip_id:
             metadata = get_ferry_trip_metadata()
-            trip_meta = metadata.get(trip_id)
+            trip_meta = metadata.get(normalize_string(trip_id))
             if trip_meta:
                 variant = _extract_from_headsign(trip_meta.get('trip_headsign'))
                 if variant:
                     return variant
+
+    # Absolute variant fallback extraction if regex missed spaced notations
+    trip_id = None
+    if 'tripUpdate' in entity and 'trip' in entity['tripUpdate']:
+        trip_id = entity['tripUpdate']['trip'].get('tripId')
+    route_id = get_route_id(entity)
+    if route_id == 'ER' and trip_id:
+        metadata = get_ferry_trip_metadata()
+        trip_meta = metadata.get(normalize_string(trip_id))
+        if trip_meta:
+            hs = trip_meta.get('trip_headsign', '').replace(' ', '').upper()
+            if 'ERA' in hs:
+                return 'ERA'
+            if 'ERB' in hs:
+                return 'ERB'
 
     return None
