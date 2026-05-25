@@ -8,6 +8,10 @@ _ferry_trip_metadata = None
 _ferry_stop_times_by_trip = None
 _ferry_stop_names = None
 
+# Cache initialization status
+_ferry_caches_initialized = False
+_ferry_cache_init_time = None
+
 
 def normalize_string(value):
     """Normalize raw string values from feed or CSV metadata."""
@@ -17,18 +21,58 @@ def normalize_string(value):
     return normalized if normalized != '' else None
 
 
+def initialize_ferry_caches():
+    """Initialize all ferry metadata caches at once with proper error handling."""
+    global _ferry_trip_route_map, _ferry_stop_to_routes, _ferry_trip_metadata
+    global _ferry_stop_times_by_trip, _ferry_stop_names, _ferry_caches_initialized
+    global _ferry_cache_init_time
+
+    import logging
+    logger = logging.getLogger('mta-api.utils')
+
+    if _ferry_caches_initialized:
+        return True
+
+    try:
+        # Initialize all caches
+        get_ferry_trip_route_map()
+        get_ferry_stop_to_routes()
+        get_ferry_trip_metadata()
+        get_ferry_stops_by_trip()
+        get_ferry_stop_name_map()
+
+        _ferry_caches_initialized = True
+        _ferry_cache_init_time = datetime.now()
+        logger.info("All ferry caches initialized successfully")
+        return True
+    except Exception as e:
+        logger.error("Failed to initialize ferry caches: %s", str(e))
+        # Set initialized flag to True even on failure to prevent repeated attempts
+        _ferry_caches_initialized = True
+        return False
+
+
 def get_ferry_trip_route_map():
     """Build a mapping from trip_id to route_id for ferry routes."""
     global _ferry_trip_route_map
     if _ferry_trip_route_map is not None:
         return _ferry_trip_route_map
 
-    trips_df = pd.read_csv('ferry_metadata/trips.txt', dtype=str)
-    # Strip quotes and spacing added by raw static metadata files
-    trips_df['trip_id'] = trips_df['trip_id'].str.strip('"').str.strip()
-    trips_df['route_id'] = trips_df['route_id'].str.strip('"').str.strip()
-    _ferry_trip_route_map = trips_df.set_index('trip_id')['route_id'].to_dict()
-    return _ferry_trip_route_map
+    import logging
+    logger = logging.getLogger('mta-api.utils')
+
+    try:
+        trips_df = pd.read_csv('ferry_metadata/trips.txt', dtype=str)
+        # Strip quotes and spacing added by raw static metadata files
+        trips_df['trip_id'] = trips_df['trip_id'].str.strip('"').str.strip()
+        trips_df['route_id'] = trips_df['route_id'].str.strip('"').str.strip()
+        _ferry_trip_route_map = trips_df.set_index('trip_id')['route_id'].to_dict()
+        logger.debug("Loaded %d trip-route mappings", len(_ferry_trip_route_map))
+        return _ferry_trip_route_map
+    except Exception as e:
+        logger.error("Failed to load ferry trip-route map: %s", str(e))
+        _ferry_trip_route_map = {}
+        return _ferry_trip_route_map
 
 
 def get_ferry_stop_to_routes():
@@ -37,15 +81,24 @@ def get_ferry_stop_to_routes():
     if _ferry_stop_to_routes is not None:
         return _ferry_stop_to_routes
 
-    stop_times_df = pd.read_csv('ferry_metadata/stop_times.txt', dtype=str)
-    trips_df = pd.read_csv('ferry_metadata/trips.txt', dtype=str)
-    stop_times_df['stop_id'] = stop_times_df['stop_id'].str.strip('"').str.strip()
-    stop_times_df['trip_id'] = stop_times_df['trip_id'].str.strip('"').str.strip()
-    trips_df['trip_id'] = trips_df['trip_id'].str.strip('"').str.strip()
-    trips_df['route_id'] = trips_df['route_id'].str.strip('"').str.strip()
-    stop_times_with_trips = stop_times_df.merge(trips_df, on='trip_id')
-    _ferry_stop_to_routes = stop_times_with_trips.groupby('stop_id')['route_id'].apply(set).to_dict()
-    return _ferry_stop_to_routes
+    import logging
+    logger = logging.getLogger('mta-api.utils')
+
+    try:
+        stop_times_df = pd.read_csv('ferry_metadata/stop_times.txt', dtype=str)
+        trips_df = pd.read_csv('ferry_metadata/trips.txt', dtype=str)
+        stop_times_df['stop_id'] = stop_times_df['stop_id'].str.strip('"').str.strip()
+        stop_times_df['trip_id'] = stop_times_df['trip_id'].str.strip('"').str.strip()
+        trips_df['trip_id'] = trips_df['trip_id'].str.strip('"').str.strip()
+        trips_df['route_id'] = trips_df['route_id'].str.strip('"').str.strip()
+        stop_times_with_trips = stop_times_df.merge(trips_df, on='trip_id')
+        _ferry_stop_to_routes = stop_times_with_trips.groupby('stop_id')['route_id'].apply(set).to_dict()
+        logger.debug("Loaded stop-to-routes mapping for %d stops", len(_ferry_stop_to_routes))
+        return _ferry_stop_to_routes
+    except Exception as e:
+        logger.error("Failed to load ferry stop-to-routes map: %s", str(e))
+        _ferry_stop_to_routes = {}
+        return _ferry_stop_to_routes
 
 
 def get_ferry_trip_metadata():
@@ -54,12 +107,21 @@ def get_ferry_trip_metadata():
     if _ferry_trip_metadata is not None:
         return _ferry_trip_metadata
 
-    trips_df = pd.read_csv('ferry_metadata/trips.txt', dtype=str)
-    trips_df['trip_id'] = trips_df['trip_id'].str.strip('"').str.strip()
-    trips_df['direction_id'] = trips_df['direction_id'].str.strip('"').str.strip()
-    trips_df['trip_headsign'] = trips_df['trip_headsign'].str.strip('"').str.strip()
-    _ferry_trip_metadata = trips_df.set_index('trip_id')[['direction_id', 'trip_headsign']].to_dict('index')
-    return _ferry_trip_metadata
+    import logging
+    logger = logging.getLogger('mta-api.utils')
+
+    try:
+        trips_df = pd.read_csv('ferry_metadata/trips.txt', dtype=str)
+        trips_df['trip_id'] = trips_df['trip_id'].str.strip('"').str.strip()
+        trips_df['direction_id'] = trips_df['direction_id'].str.strip('"').str.strip()
+        trips_df['trip_headsign'] = trips_df['trip_headsign'].str.strip('"').str.strip()
+        _ferry_trip_metadata = trips_df.set_index('trip_id')[['direction_id', 'trip_headsign']].to_dict('index')
+        logger.debug("Loaded metadata for %d ferry trips", len(_ferry_trip_metadata))
+        return _ferry_trip_metadata
+    except Exception as e:
+        logger.error("Failed to load ferry trip metadata: %s", str(e))
+        _ferry_trip_metadata = {}
+        return _ferry_trip_metadata
 
 
 def get_ferry_stop_name_map():
@@ -68,11 +130,20 @@ def get_ferry_stop_name_map():
     if _ferry_stop_names is not None:
         return _ferry_stop_names
 
-    stops_df = pd.read_csv('ferry_metadata/stops.txt', dtype=str)
-    stops_df['stop_id'] = stops_df['stop_id'].str.strip('"').str.strip()
-    stops_df['stop_name'] = stops_df['stop_name'].str.strip('"').str.strip()
-    _ferry_stop_names = stops_df.set_index('stop_id')['stop_name'].to_dict()
-    return _ferry_stop_names
+    import logging
+    logger = logging.getLogger('mta-api.utils')
+
+    try:
+        stops_df = pd.read_csv('ferry_metadata/stops.txt', dtype=str)
+        stops_df['stop_id'] = stops_df['stop_id'].str.strip('"').str.strip()
+        stops_df['stop_name'] = stops_df['stop_name'].str.strip('"').str.strip()
+        _ferry_stop_names = stops_df.set_index('stop_id')['stop_name'].to_dict()
+        logger.debug("Loaded names for %d ferry stops", len(_ferry_stop_names))
+        return _ferry_stop_names
+    except Exception as e:
+        logger.error("Failed to load ferry stop names: %s", str(e))
+        _ferry_stop_names = {}
+        return _ferry_stop_names
 
 
 def get_ferry_stops_by_trip():
@@ -80,31 +151,41 @@ def get_ferry_stops_by_trip():
     global _ferry_stop_times_by_trip
     if _ferry_stop_times_by_trip is not None:
         return _ferry_stop_times_by_trip
-    stop_times_df = pd.read_csv(
-        'ferry_metadata/stop_times.txt',
-        usecols=['trip_id', 'stop_id', 'stop_sequence', 'arrival_time'],
-        dtype=str
-    )
-    stop_times_df['trip_id'] = stop_times_df['trip_id'].str.strip('"').str.strip()
-    stop_times_df['stop_id'] = stop_times_df['stop_id'].str.strip('"').str.strip()
-    # Parse stop_sequence and arrival_time into numeric values
-    stop_times_df['stop_sequence'] = stop_times_df['stop_sequence'].astype(int)
 
-    def _time_to_seconds(t):
-        try:
-            parts = t.split(':')
-            h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
-            return h * 3600 + m * 60 + s
-        except Exception:
-            return None
+    import logging
+    logger = logging.getLogger('mta-api.utils')
 
-    stop_times_df['arrival_seconds'] = stop_times_df['arrival_time'].apply(_time_to_seconds)
-    sorted_times = stop_times_df.sort_values(['trip_id', 'stop_sequence'])
-    # Include arrival_seconds so callers can compute offsets between stops
-    _ferry_stop_times_by_trip = sorted_times.groupby('trip_id').apply(
-        lambda df: df[['stop_id', 'stop_sequence', 'arrival_seconds']].to_dict('records')
-    ).to_dict()
-    return _ferry_stop_times_by_trip
+    try:
+        stop_times_df = pd.read_csv(
+            'ferry_metadata/stop_times.txt',
+            usecols=['trip_id', 'stop_id', 'stop_sequence', 'arrival_time'],
+            dtype=str
+        )
+        stop_times_df['trip_id'] = stop_times_df['trip_id'].str.strip('"').str.strip()
+        stop_times_df['stop_id'] = stop_times_df['stop_id'].str.strip('"').str.strip()
+        # Parse stop_sequence and arrival_time into numeric values
+        stop_times_df['stop_sequence'] = stop_times_df['stop_sequence'].astype(int)
+
+        def _time_to_seconds(t):
+            try:
+                parts = t.split(':')
+                h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
+                return h * 3600 + m * 60 + s
+            except Exception:
+                return None
+
+        stop_times_df['arrival_seconds'] = stop_times_df['arrival_time'].apply(_time_to_seconds)
+        sorted_times = stop_times_df.sort_values(['trip_id', 'stop_sequence'])
+        # Include arrival_seconds so callers can compute offsets between stops
+        _ferry_stop_times_by_trip = sorted_times.groupby('trip_id').apply(
+            lambda df: df[['stop_id', 'stop_sequence', 'arrival_seconds']].to_dict('records')
+        ).to_dict()
+        logger.debug("Loaded stop sequences for %d ferry trips", len(_ferry_stop_times_by_trip))
+        return _ferry_stop_times_by_trip
+    except Exception as e:
+        logger.error("Failed to load ferry stops by trip: %s", str(e))
+        _ferry_stop_times_by_trip = {}
+        return _ferry_stop_times_by_trip
 
 
 def get_ferry_direction_id(entity):
@@ -273,6 +354,11 @@ def get_ferry_subroute(entity):
             m = re.search(r'\bER\s*([AB])\b', headsign, re.I)
         if m:
             return 'ER' + m.group(1).upper()
+        # Additional patterns for more robust matching
+        if 'ERA' in headsign.upper():
+            return 'ERA'
+        if 'ERB' in headsign.upper():
+            return 'ERB'
         return None
 
     # First try the realtime trip headsign
@@ -283,7 +369,7 @@ def get_ferry_subroute(entity):
         if variant:
             return variant
 
-        # Fall back to metadata for the tripId
+        # Fall back to metadata for the tripId when realtime headsign is missing
         trip_id = trip.get('tripId')
         if trip_id:
             metadata = get_ferry_trip_metadata()
@@ -298,14 +384,22 @@ def get_ferry_subroute(entity):
     if 'tripUpdate' in entity and 'trip' in entity['tripUpdate']:
         trip_id = entity['tripUpdate']['trip'].get('tripId')
     route_id = get_route_id(entity)
-    if route_id == 'ER' and trip_id:
+
+    # Enhanced logic: if route_id is ER, try to determine subroute from metadata
+    if (route_id == 'ER' or route_id is None) and trip_id:
         metadata = get_ferry_trip_metadata()
         trip_meta = metadata.get(normalize_string(trip_id))
         if trip_meta:
-            hs = trip_meta.get('trip_headsign', '').replace(' ', '').upper()
-            if 'ERA' in hs:
-                return 'ERA'
-            if 'ERB' in hs:
-                return 'ERB'
+            hs = trip_meta.get('trip_headsign', '')
+            if hs:  # Only try extraction if headsign exists
+                variant = _extract_from_headsign(hs)
+                if variant:
+                    return variant
+                # Fallback pattern matching
+                hs_clean = hs.replace(' ', '').upper()
+                if 'ERA' in hs_clean:
+                    return 'ERA'
+                if 'ERB' in hs_clean:
+                    return 'ERB'
 
     return None
