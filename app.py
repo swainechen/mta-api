@@ -54,9 +54,14 @@ def nextTrains(station_id):
 
 @app.route('/api/ferry_times/<station_id>')
 def nextFerry(station_id):
-    """Get arrival times for a specific ferry station."""
+    """Get arrival times for a specific ferry station, prioritizing next stops."""
     times = Times().ferry_times
-    station_route = list(filter(lambda station: station['station_id'] == station_id, times))
+    station_route_full = list(filter(lambda station: station['station_id'] == station_id, times))
+    # Filter out entries that are marked as terminal, unless the list only contains one entry (i.e., the station IS the terminal point)
+    station_route = [
+        station for station in station_route_full
+        if station['terminal'] == False or len(station_route_full) == 1
+    ]
     return jsonify(station_route)
 
 

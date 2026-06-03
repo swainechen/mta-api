@@ -158,7 +158,7 @@ def get_ferry_stops_by_trip():
     try:
         stop_times_df = pd.read_csv(
             'ferry_metadata/stop_times.txt',
-            usecols=['trip_id', 'stop_id', 'stop_sequence', 'arrival_time'],
+            usecols=['trip_id', 'stop_id', 'stop_sequence', 'arrival_time', 'departure_time'],
             dtype=str
         )
         stop_times_df['trip_id'] = stop_times_df['trip_id'].str.strip('"').str.strip()
@@ -175,10 +175,11 @@ def get_ferry_stops_by_trip():
                 return None
 
         stop_times_df['arrival_seconds'] = stop_times_df['arrival_time'].apply(_time_to_seconds)
+        stop_times_df['departure_seconds'] = stop_times_df['departure_time'].apply(_time_to_seconds)
         sorted_times = stop_times_df.sort_values(['trip_id', 'stop_sequence'])
-        # Include arrival_seconds so callers can compute offsets between stops
+        # Include both arrival_seconds and departure_seconds so callers can compute offsets between stops
         _ferry_stop_times_by_trip = sorted_times.groupby('trip_id').apply(
-            lambda df: df[['stop_id', 'stop_sequence', 'arrival_seconds']].to_dict('records')
+            lambda df: df[['stop_id', 'stop_sequence', 'arrival_seconds', 'departure_seconds']].to_dict('records')
         ).to_dict()
         logger.debug("Loaded stop sequences for %d ferry trips", len(_ferry_stop_times_by_trip))
         return _ferry_stop_times_by_trip

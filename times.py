@@ -102,30 +102,34 @@ class Times:
                                       normalize_string(trip_id), stopId, stops_by_trip is not None)
 
                     if stops_by_trip:
-                        # Find current stop index
+                        # Find current stop index and check if it's the last stop (terminal)
                         current_index = None
+                        is_terminal_stop = False
                         for idx, s in enumerate(stops_by_trip):
                             if normalize_string(s.get('stop_id')) == normalize_string(stopId):
                                 current_index = idx
+                                is_terminal_stop = (idx == len(stops_by_trip) - 1)
                                 break
 
-                        self.logger.debug('Current stop lookup: trip_id=%s, stopId=%s, current_index=%s',
-                                          normalize_string(trip_id), stopId, current_index)
+                        self.logger.debug('Current stop lookup: trip_id=%s, stopId=%s, current_index=%s, is_terminal=%s',
+                                          normalize_string(trip_id), stopId, current_index, is_terminal_stop)
 
                         if current_index is not None:
                             try:
-                                current_arrival = stops_by_trip[current_index].get('arrival_seconds') or 0
                                 stop_name_map = get_ferry_stop_name_map()
-                                # For current and downstream stops, compute predicted time using scheduled offsets
                                 # Determine if there's a more specific subroute (ERA/ERB)
                                 subroute = get_ferry_subroute(entity)
                                 self.logger.debug('Subroute detection: trip_id=%s, detected_subroute=%s',
                                                   normalize_string(trip_id), subroute)
 
+                                # Get departure time for the current stop
+                                current_departure = stops_by_trip[current_index].get('departure_seconds') or 0
+
                                 predictions_made = 0
                                 for j in range(current_index, len(stops_by_trip)):
                                     s_entry = stops_by_trip[j]
-                                    delta = (s_entry.get('arrival_seconds') or 0) - current_arrival
+                                    # Use departure_seconds for all calculations to show departure times
+                                    delta = (s_entry.get('departure_seconds') or 0) - current_departure
                                     predicted = time_difference + delta
                                     if predicted is not None and predicted > 0 and predicted < MAX_TIME_DIFFERENCE:
                                         next_stop_name = None
@@ -134,8 +138,12 @@ class Times:
                                             next_stop_name = stop_name_map.get(next_stop_id)
                                         display_route = subroute if subroute is not None else route_id
 
-                                        self.logger.debug('Adding predicted time: trip_id=%s, stop_id=%s, route_id=%s, predicted_time=%.0f',
-                                                          normalize_string(trip_id), s_entry.get('stop_id'), display_route, predicted)
+                                        # For terminal stops, mark as terminal and use departure time
+                                        # For non-terminal stops, show arrival time at that stop
+                                        is_last = (j == len(stops_by_trip) - 1)
+
+                                        self.logger.debug('Adding predicted time: trip_id=%s, stop_id=%s, route_id=%s, predicted_time=%.0f, terminal=%s',
+                                                          normalize_string(trip_id), s_entry.get('stop_id'), display_route, predicted, is_last)
 
                                         times.append({
                                             'stop_id': s_entry.get('stop_id'),
@@ -144,7 +152,7 @@ class Times:
                                             'time': predicted,
                                             'source': source,
                                             'next_stop': next_stop_name,
-                                            'terminal': terminal
+                                            'terminal': is_last  # Only mark as terminal for the last stop
                                         })
                                         predictions_made += 1
                                 self.logger.debug('Made %d predictions for trip %s', predictions_made, normalize_string(trip_id))
@@ -161,7 +169,7 @@ class Times:
                                     'time': time_difference,
                                     'source': source,
                                     'next_stop': next_stop,
-                                    'terminal': terminal
+                                    'terminal': True  # Current stop is the last (or only) stop in the trip
                                 })
                         else:
                             # Fall back to adding only the current stop if mapping not found
@@ -175,7 +183,7 @@ class Times:
                                 'time': time_difference,
                                 'source': source,
                                 'next_stop': next_stop,
-                                'terminal': terminal
+                                'terminal': True  # Unknown if terminal, but mark as it since we don't have full trip info
                             })
                     else:
                         # No trip stop metadata available; add only the current stop
@@ -189,7 +197,7 @@ class Times:
                             'time': time_difference,
                             'source': source,
                             'next_stop': next_stop,
-                            'terminal': terminal
+                            'terminal': True  # Unknown if terminal, but mark as it since we don't have full trip info
                         })
         except Exception as e:
             self.logger.error('Error processing update for entity: %s', str(e))
