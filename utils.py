@@ -233,24 +233,49 @@ def get_ferry_trip_headsign(entity):
 
 def get_ferry_next_stop(entity, current_stop_id):
     """Get the next stop name for a ferry trip if available."""
-    if 'tripUpdate' not in entity or 'trip' not in entity['tripUpdate']:
+    if current_stop_id is None:
         return None
 
-    trip_id = entity['tripUpdate']['trip'].get('tripId')
-    if not trip_id or current_stop_id is None:
+    stop_name_map = get_ferry_stop_name_map()
+    normalized_stop_id = normalize_string(current_stop_id)
+    if not normalized_stop_id:
         return None
 
-    stops_by_trip = get_ferry_stops_by_trip().get(normalize_string(trip_id))
-    if not stops_by_trip:
+    def _find_next_stop(stops_by_trip):
+        for index, stop_entry in enumerate(stops_by_trip):
+            if normalize_string(stop_entry.get('stop_id')) == normalized_stop_id:
+                if index + 1 < len(stops_by_trip):
+                    next_stop_id = stops_by_trip[index + 1]['stop_id']
+                    return stop_name_map.get(next_stop_id)
+                break
         return None
 
-    for index, stop_entry in enumerate(stops_by_trip):
-        if normalize_string(stop_entry.get('stop_id')) == normalize_string(current_stop_id):
-            if index + 1 < len(stops_by_trip):
-                stop_name_map = get_ferry_stop_name_map()
-                next_stop_id = stops_by_trip[index + 1]['stop_id']
-                return stop_name_map.get(next_stop_id)
-            break
+    if 'tripUpdate' in entity and 'trip' in entity['tripUpdate']:
+        trip_id = entity['tripUpdate']['trip'].get('tripId')
+        if trip_id:
+            stops_by_trip = get_ferry_stops_by_trip().get(normalize_string(trip_id))
+            if stops_by_trip:
+                next_stop = _find_next_stop(stops_by_trip)
+                if next_stop:
+                    return next_stop
+
+    # Fallback: use stopSequence from the realtime update to infer the next stop
+    updates = get_updates(entity)
+    if updates:
+        stop_sequence = updates[0].get('stopSequence') or updates[0].get('stop_sequence')
+        try:
+            stop_sequence = int(stop_sequence)
+        except Exception:
+            stop_sequence = None
+
+        if stop_sequence is not None:
+            for trip_stops in get_ferry_stops_by_trip().values():
+                for index, stop_entry in enumerate(trip_stops):
+                    if normalize_string(stop_entry.get('stop_id')) == normalized_stop_id and stop_entry.get('stop_sequence') == stop_sequence:
+                        if index + 1 < len(trip_stops):
+                            next_stop_id = trip_stops[index + 1]['stop_id']
+                            return stop_name_map.get(next_stop_id)
+                        break
 
     return None
 
@@ -327,11 +352,10 @@ def infer_ferry_route_from_stop(entity):
     if not routes:
         return None
 
-    # Prefer generic ER if the stop supports East River service before falling back.
-    if 'ER' in routes:
-        return 'ER'
+    if len(routes) == 1:
+        return next(iter(routes))
 
-    preferred = ['ERA', 'ERB', 'AS', 'SB', 'RS', 'RW', 'RWS', 'RES', 'SG']
+    preferred = ['ERA', 'ERB', 'AS', 'SB', 'RS', 'RW', 'RWS', 'RES', 'SG', 'ER']
     for route in preferred:
         if route in routes:
             return route
