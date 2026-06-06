@@ -1,92 +1,99 @@
-import time
-
+import os
 from flask import Flask, jsonify
 from flask_cors import CORS
-from markupsafe import escape
+from metadata import TransitMetadata
+from engine import TransitEngine
 
-from times import Times
-from stations import Stations
-from routes import Routes
-
-# __name__ = name of current module
 app = Flask(__name__)
 CORS(app)
 
+meta_store = TransitMetadata()
+transit_engine = TransitEngine(meta_store)
+
+print("Seeding live transit cache arrays...")
+transit_engine.refresh()
+transit_engine.start_background_loop(interval=30)
+print("Background cache loop running smoothly.")
 
 @app.route('/')
-def homepage1():
-    return 'Welcome to SubwayApi'
-
-
 @app.route('/api/')
-def homepage2():
+def homepage():
     return 'Welcome to SubwayApi'
-
 
 @app.route('/api/train_times/')
 def train_times():
-    """Get arrival times for all subway stations."""
-    trains = Times().train_times
-    return jsonify(trains)
-
+    with transit_engine.lock:
+        return jsonify(transit_engine.train_times_cache)
 
 @app.route('/api/ferry_times/')
 def ferry_times():
-    """Get arrival times for all ferry stations."""
-    ferry = Times().ferry_times
-    return jsonify(ferry)
-
+    with transit_engine.lock:
+        return jsonify(transit_engine.ferry_times_cache)
 
 @app.route('/api/times/')
 def all_times():
-    """Get arrival times for all stations (subway + ferry)."""
-    times = Times().get_all_times()
-    return jsonify(times)
-
-
-@app.route('/api/train_times/<station_id>')
-def nextTrains(station_id):
-    """Get arrival times for a specific subway station."""
-    times = Times().train_times
-    station_route = list(filter(lambda station: station['station_id'] == station_id, times))
-    return jsonify(station_route)
-
-
-@app.route('/api/ferry_times/<station_id>')
-def nextFerry(station_id):
-    """Get arrival times for a specific ferry station, prioritizing next stops."""
-    times = Times().ferry_times
-    station_route_full = list(filter(lambda station: station['station_id'] == station_id, times))
-    # Filter out entries that are marked as terminal, unless the list only contains one entry (i.e., the station IS the terminal point)
-    station_route = [
-        station for station in station_route_full
-        if station['terminal'] == False or len(station_route_full) == 1
-    ]
-    return jsonify(station_route)
-
+    with transit_engine.lock:
+        return jsonify(transit_engine.train_times_cache + transit_engine.ferry_times_cache)
 
 @app.route('/api/times/<station_id>')
-def nextAll(station_id):
-    """Get arrival times for a specific station (subway or ferry)."""
-    times = Times().get_all_times()
-    station_route = list(filter(lambda station: station['station_id'] == station_id, times))
-    return jsonify(station_route)
-
+def next_all(station_id):
+    station_id_clean = str(station_id).strip()
+    
+    with transit_engine.lock:
+        combined = transit_engine.train_times_cache + transit_engine.ferry_times_cache
+        
+        # 1. Look for a pure, direct cache identifier match
+        matched_station = next((s for s in combined if s['station_id'] == station_id_clean), None)
+        
+        # 2. Try matching against the suffix of the complex key (e.g. matching '87' to 'FERRY-STATION-87')
+        if not matched_station:
+            matched_station = next((s for s in combined if s['station_id'].endswith(f"-{station_id_clean}")), None)
+            
+        # 3. Dynamic reverse lookup: If the frontend sends a full master ID string, match it by suffix
+        if not matched_station:
+            matched_station = next((s for s in combined if station_id_clean.endswith(f"-{s['station_id']}")), None)
+            
+        if matched_station:
+            # Return wrapped inside an array block to ensure cross-version compatibility
+            return jsonify([matched_station])
+            
+    # Fallback skeleton framework object safe containment
+    station_name = meta_store.stop_names.get(station_id_clean, f"Station {station_id_clean}")
+    return jsonify([{
+        'station_id': station_id_clean,
+        'name': station_name,
+        'lines': {},
+        'trains': [],
+        'source': 'ferry' if station_id_clean.isdigit() and int(station_id_clean) < 200 else 'subway'
+    }])
 
 @app.route('/api/stations/')
 def stops():
-    """Get all stations (subway + ferry)."""
-    stations = Stations().stations
-    return jsonify(stations)
-
-
-@app.route('/api/routes/')
-def routes():
-    """Get all routes (subway + ferry)."""
-    routes = Routes().routes
-    return jsonify(routes)
-
+    with transit_engine.lock:
+        combined = transit_engine.train_times_cache + transit_engine.ferry_times_cache
+        
+        station_list = []
+        for s in combined:
+            # Extract the pure structural master identifier from the complex string key
+            # (e.g., converts 'SUBWAY-COMPLEX-229' -> '229' or 'FERRY-STATION-87' -> '87')
+            raw_id = s['station_id'].split('-')[-1]
+            
+            station_list.append({
+                # 1. Keep this compound string key unique to keep the React option keys happy
+                'station_id': f"{s.get('source', 'subway')}-{s['station_id']}",
+                # 2. Hand over the clean, raw identifier string the tracking loops expect
+                'raw_id': raw_id,
+                'name': s['name'],
+                'source': s.get('source', 'subway')
+            })
+            
+        return jsonify(station_list)
 
 if __name__ == "__main__":
-    import bjoern
-    bjoern.run(app, "0.0.0.0", 5280)
+    try:
+        import bjoern
+        print("Starting production Bjoern server on port 5280...")
+        bjoern.run(app, "0.0.0.0", 5280)
+    except ImportError:
+        print("Bjoern not found. Falling back to native Flask testing server...")
+        app.run(host="127.0.0.1", port=5280, debug=False, use_reloader=False)
