@@ -93,20 +93,22 @@ class TransitEngine:
                             'time': diff,
                             'source': 'subway',
                             'next_stop': None,
-                            'terminal': f"{route_id} Train - {direction}"  # Clear dynamic terminus routing text
+                            'terminal': direction  # Just "Uptown" or "Downtown" - frontend will abbreviate
                         })
 
-        # 3. Parse Ferry Entities
+# 3. Parse Ferry Entities
         for entity in raw_ferry:
             tu = entity.get('tripUpdate', {})
-            if not tu or 'stopTimeUpdate' not in tu: continue
+            if not tu or 'stopTimeUpdate' not in tu: 
+                continue
+                
             trip = tu.get('trip', {})
             trip_id = str(trip.get('tripId')).strip()
             
             meta = self.meta.trips.get(trip_id, {})
             route_id = trip.get('routeId') or meta.get('route_id')
             
-            # Collapse headsign spacing formatting variations down
+            # Keep ferry line route variants clean (ERA / ERB)
             headsign_clean = meta.get('headsign', '').replace(" ", "").upper()
             if "ERA" in headsign_clean: route_id = "ERA"
             elif "ERB" in headsign_clean: route_id = "ERB"
@@ -116,59 +118,40 @@ class TransitEngine:
             direction_symbol = 'I' if str(direction_id) == '1' else 'O'
             terminal_name = meta.get('headsign', 'Unknown')
 
-            seen_trip_stops = set()
+            # Look up immediate down-line stops to calculate next landing names dynamically
+            updates_list = tu['stopTimeUpdate']
 
-            for update in tu['stopTimeUpdate']:
+            for idx, update in enumerate(updates_list):
                 stop_id = str(update.get('stopId')).strip()
-                tgt_time = update.get('arrival', {}).get('time') or update.get('departure', {}).get('time')
-                if not tgt_time: continue
                 
+                # Capture the explicit time target calculated by the transit authority server
+                tgt_time = update.get('arrival', {}).get('time') or update.get('departure', {}).get('time')
+                if not tgt_time: 
+                    continue
+                
+                # Math matches your verified accurate system clock safely now
                 time_diff = float(tgt_time) - now
-                if not (0 <= time_diff < 1800): continue
+                
+                # Filter down to arrivals within a defensive 45-minute horizon window
+                if 0 <= time_diff < 2700:
+                    next_stop_name = None
+                    
+                    # Look ahead exactly one index position in the live feed to capture the true next landing
+                    if idx + 1 < len(updates_list):
+                        next_sid = updates_list[idx + 1].get('stopId')
+                        next_stop_name = self.meta.stop_names.get(next_sid)
 
-                stops_by_trip = self.meta.stops_by_trip.get(trip_id)
-                if stops_by_trip:
-                    current_idx = next((i for i, s in enumerate(stops_by_trip) if s['stop_id'] == stop_id), None)
-                    if current_idx is not None:
-                        current_arrival = stops_by_trip[current_idx]['arrival_seconds']
-                        
-                        for j in range(current_idx, len(stops_by_trip)):
-                            s_entry = stops_by_trip[j]
-                            stop_key = f"{trip_id}-{s_entry['stop_id']}"
-                            
-                            if stop_key in seen_trip_stops: 
-                                continue
-                                
-                            delta = s_entry['arrival_seconds'] - current_arrival
-                            predicted = time_diff + delta
-                            
-                            if 0 <= predicted <= 1900:
-                                next_stop_name = None
-                                if j + 1 < len(stops_by_trip):
-                                    next_sid = stops_by_trip[j+1]['stop_id']
-                                    next_stop_name = self.meta.stop_names.get(next_sid)
-
-                                # Set destination to the immediate next stop; fall back to terminal at last landing
-                                display_destination = next_stop_name if next_stop_name else terminal_name
-                                processed_ferry_updates.append({
-                                    'stop_id': s_entry['stop_id'],
-                                    'route_id': route_id,
-                                    'direction': direction_symbol,
-                                    'time': predicted,
-                                    'source': 'ferry',
-                                    'next_stop': next_stop_name,
-                                    'terminal': display_destination
-                                })
-                                seen_trip_stops.add(stop_key)
-                else:
+                    # Dynamic display destination mapping
+                    display_destination = next_stop_name if next_stop_name else terminal_name
+                    
                     processed_ferry_updates.append({
                         'stop_id': stop_id,
                         'route_id': route_id,
                         'direction': direction_symbol,
-                        'time': time_diff,
+                        'time': time_diff, # Clean real-time difference directly from feed
                         'source': 'ferry',
-                        'next_stop': None,
-                        'terminal': terminal_name
+                        'next_stop': next_stop_name,
+                        'terminal': display_destination
                     })
 
         # 4. Group data matrices using Union-Find mapping tables
