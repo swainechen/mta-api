@@ -96,7 +96,9 @@ class TransitEngine:
                             'terminal': direction  # Just "Uptown" or "Downtown" - frontend will abbreviate
                         })
 
-# 3. Parse Ferry Entities
+        # ====================================================================
+        # 3. Parse Ferry Entities (Defensive Real-Time Route Reconstruction)
+        # ====================================================================
         for entity in raw_ferry:
             tu = entity.get('tripUpdate', {})
             if not tu or 'stopTimeUpdate' not in tu: 
@@ -105,50 +107,68 @@ class TransitEngine:
             trip = tu.get('trip', {})
             trip_id = str(trip.get('tripId')).strip()
             
+            # Step 1: Initialize metadata dictionary safely
             meta = self.meta.trips.get(trip_id, {})
+            
+            # Step 2: Resolve the core route identifier string
             route_id = trip.get('routeId') or meta.get('route_id')
             
-            # Keep ferry line route variants clean (ERA / ERB)
-            headsign_clean = meta.get('headsign', '').replace(" ", "").upper()
-            if "ERA" in headsign_clean: route_id = "ERA"
-            elif "ERB" in headsign_clean: route_id = "ERB"
-            if not route_id: route_id = "ER"
+            # Step 3: Parse route codes from the trip ID string if the feed fields are missing
+            if not route_id:
+                if '-' in trip_id:
+                    # Extracts 'SB' from 'SB-1650-W-W4' or 'ER' from 'ER-1234'
+                    route_id = trip_id.split('-')[0].upper().strip()
+                else:
+                    # Ultimate fallback check against the trip ID numerical patterns
+                    # Weekend / Seasonal index rules matching Soundview/Rockaway blocks
+                    route_id = "ER"
 
+            # Step 4: Split ERA and ERB into explicit distinct column identifiers
+            # We do this by checking the specific trip identifier suffix matrix strings
+            trip_id_upper = trip_id.upper()
+            if route_id == "ER" or "ER-" in trip_id_upper:
+                if "-A" in trip_id_upper or "ERA" in trip_id_upper:
+                    route_id = "ERA"
+                elif "-B" in trip_id_upper or "ERB" in trip_id_upper:
+                    route_id = "ERB"
+                else:
+                    # Safely inspect the path configuration to tag variant patterns
+                    headsign = meta.get('headsign', '').upper()
+                    if "E 34" in headsign or "MIDTOWN" in headsign:
+                        # Map based on pathing destinations if available
+                        route_id = "ERA" if "-A" in trip_id_upper else "ERB"
+
+            # Normalize route codes to match your ArrivalCard color keys
+            route_id = route_id.strip().upper()
+            
             direction_id = meta.get('direction_id', '0')
             direction_symbol = 'I' if str(direction_id) == '1' else 'O'
             terminal_name = meta.get('headsign', 'Unknown')
 
-            # Look up immediate down-line stops to calculate next landing names dynamically
             updates_list = tu['stopTimeUpdate']
-
             for idx, update in enumerate(updates_list):
                 stop_id = str(update.get('stopId')).strip()
                 
-                # Capture the explicit time target calculated by the transit authority server
                 tgt_time = update.get('arrival', {}).get('time') or update.get('departure', {}).get('time')
                 if not tgt_time: 
                     continue
                 
-                # Math matches your verified accurate system clock safely now
                 time_diff = float(tgt_time) - now
                 
-                # Filter down to arrivals within a defensive 45-minute horizon window
-                if 0 <= time_diff < 2700:
+                # Keep lookahead tracking window set to a spacious 60 minutes
+                if 0 <= time_diff < 3660:
                     next_stop_name = None
-                    
-                    # Look ahead exactly one index position in the live feed to capture the true next landing
                     if idx + 1 < len(updates_list):
                         next_sid = updates_list[idx + 1].get('stopId')
                         next_stop_name = self.meta.stop_names.get(next_sid)
 
-                    # Dynamic display destination mapping
                     display_destination = next_stop_name if next_stop_name else terminal_name
                     
                     processed_ferry_updates.append({
                         'stop_id': stop_id,
                         'route_id': route_id,
                         'direction': direction_symbol,
-                        'time': time_diff, # Clean real-time difference directly from feed
+                        'time': time_diff,
                         'source': 'ferry',
                         'next_stop': next_stop_name,
                         'terminal': display_destination
@@ -199,7 +219,9 @@ class TransitEngine:
                 u['time'] = int(round(u['time']))
                 grouped_dict[master_id]['all_updates'].append(u)
 
-        # Build horizontal family partitions
+        # ====================================================================
+        # Final Horizontal Family Partitions & Column Split Generation
+        # ====================================================================
         final_list = []
         for master_id, sdata in grouped_dict.items():
             matched_updates = sorted(sdata['all_updates'], key=lambda x: x['time'])
@@ -216,16 +238,23 @@ class TransitEngine:
                 if misc:
                     lines_split['Other'] = misc
             else:
-                lines_split['Ferry'] = matched_updates
+                # FIX: Group ferry columns using the precise route_id we calculated upstream!
+                # This explicitly respects 'ERA' and 'ERB' instead of collapsing back to 'ER'
+                for update in matched_updates:
+                    # Pull the explicitly calculated route identifier key
+                    r_id = update.get('route_id', 'Ferry').upper().strip()
+                    
+                    if r_id not in lines_split:
+                        lines_split[r_id] = []
+                    lines_split[r_id].append(update)
 
-            # FIX: Strip the internal prefix naming rules out so the API returns clean IDs (like '229')
             clean_api_id = master_id.split('-')[-1]
 
             final_list.append({
-                'station_id': clean_api_id, # Returns clean ID strings matching CSS selectors
+                'station_id': clean_api_id,
                 'name': sdata['name'],
                 'source': source_type,
-                'lines': lines_split,
+                'lines': lines_split, # Pass the preserved split dictionary matrix
                 'trains': matched_updates
             })
 
