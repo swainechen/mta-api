@@ -1,7 +1,7 @@
-import csv
 import os
 import time
 import threading
+import subprocess
 import requests
 from google.transit import gtfs_realtime_pb2
 from google.protobuf.json_format import MessageToDict
@@ -11,9 +11,19 @@ class TransitEngine:
         self.meta = metadata
         self.lock = threading.Lock()
         
-        # Thread-safe dual storage buckets matching your API endpoints
         self.train_times_cache = []
         self.ferry_times_cache = []
+        
+        # --- Update Hook State ---
+        self.missed_trips = 0
+        self.last_update_time = 0
+        self.UPDATE_COOLDOWN = 6 * 3600  # 6 hours debounce
+        self.meta_dir = getattr(self.meta, 'base_dir', './static_metadata')
+        
+        try:
+            self._last_ferry_link = os.readlink(os.path.join(self.meta_dir, 'ferry_active'))
+        except OSError:
+            self._last_ferry_link = None
         
         self.subway_urls = {
             'ACE': 'https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace',
@@ -26,6 +36,35 @@ class TransitEngine:
             'SIR': 'https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-si',
         }
         self.ferry_url = "http://nycferry.connexionz.net/rtt/public/utility/gtfsrealtime.aspx/tripupdate"
+
+    @staticmethod
+    def clean(val):
+        return str(val).replace('"', '').strip() if val else ""
+
+    @staticmethod
+    def get_route_family_from_terminal(final_stop_id):
+        sid = TransitEngine.clean(final_stop_id)
+        if sid in ["89", "90", "112", "113", "25"]: return "AS"
+        elif sid in ["111", "17", "24", "115"]: return "SB"
+        elif sid in ["23", "137", "138", "136", "141"]: return "SG"
+        elif sid in ["16", "62", "118", "88", "142"]: return "RS"
+        else: return "ER"
+
+    def _record_missed_trip(self):
+        """Hook to trigger the external metadata updater if static data goes stale."""
+        self.missed_trips += 1
+        if self.missed_trips >= 5:
+            now = time.time()
+            if now - self.last_update_time > self.UPDATE_COOLDOWN:
+                print("Missed trip threshold reached. Triggering background metadata update...")
+                self.last_update_time = now
+                self.missed_trips = 0
+                
+                updater_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata_updater.py")
+                if os.path.exists(updater_script):
+                    subprocess.Popen(["python3", updater_script])
+                else:
+                    print(f"Could not find updater script at {updater_script}")
 
     def fetch_entities(self, url, headers=None):
         try:
@@ -51,10 +90,27 @@ class TransitEngine:
         t.start()
 
     def refresh(self):
+        # ====================================================================
+        # 0. Hot-Reload Hook (Check for Symlink Swaps)
+        # ====================================================================
+        try:
+            ferry_link_path = os.path.join(self.meta_dir, 'ferry_active')
+            if os.path.islink(ferry_link_path):
+                current_ferry_link = os.readlink(ferry_link_path)
+                if self._last_ferry_link and current_ferry_link != self._last_ferry_link:
+                    print(f"New symlink detected ({current_ferry_link}). Hot-reloading metadata...")
+                    new_meta = self.meta.__class__(self.meta_dir)
+                    with self.lock:
+                        self.meta = new_meta
+                        self._last_ferry_link = current_ferry_link
+                elif not self._last_ferry_link:
+                    self._last_ferry_link = current_ferry_link
+        except Exception as e:
+            print(f"Hot-reload check failed: {e}")
+
         now = time.time()
         subway_headers = {"x-api-key": os.getenv("MTA_API_KEY", "")}
         
-        # 1. Fetch live buffers from the web
         raw_subway = []
         for url in self.subway_urls.values():
             raw_subway.extend(self.fetch_entities(url, subway_headers))
@@ -64,129 +120,141 @@ class TransitEngine:
         processed_subway_updates = []
         processed_ferry_updates = []
 
-        # 2. Parse Subway Entities
-        for entity in raw_subway:
-            tu = entity.get('tripUpdate', {})
-            if not tu or 'stopTimeUpdate' not in tu:
-                continue
-            trip = tu.get('trip', {})
-            trip_id = str(trip.get('tripId')).strip()
-            route_id = trip.get('routeId') or self.meta.trips.get(trip_id, {}).get('route_id', 'UNK')
-            
-            for update in tu['stopTimeUpdate']:
-                raw_stop_id = str(update.get('stopId')).strip()
-                if not raw_stop_id: continue
-                
-                # Isolate platform suffix letters
-                stop_id = raw_stop_id[:-1] if raw_stop_id[-1] in ('N', 'S') else raw_stop_id
-                raw_dir = raw_stop_id[-1] if raw_stop_id[-1] in ('N', 'S') else 'N'
-                direction = 'Uptown' if raw_dir == 'N' else 'Downtown'
-                
-                tgt_time = update.get('arrival', {}).get('time') or update.get('departure', {}).get('time')
-                if tgt_time:
-                    diff = float(tgt_time) - now
-                    if 0 < diff < 1800:  # Only look up arrivals inside a 30 minute window
-                        processed_subway_updates.append({
-                            'stop_id': stop_id,
-                            'route_id': route_id,
-                            'direction': direction,
-                            'time': diff,
-                            'source': 'subway',
-                            'next_stop': None,
-                            'terminal': direction  # Just "Uptown" or "Downtown" - frontend will abbreviate
-                        })
-
         # ====================================================================
-        # 3. Parse Ferry Entities (Defensive Real-Time Route Reconstruction)
+        # 1. Parse Subway Entities
         # ====================================================================
-        for entity in raw_ferry:
-            tu = entity.get('tripUpdate', {})
-            if not tu or 'stopTimeUpdate' not in tu: 
-                continue
+        with self.lock:
+            for entity in raw_subway:
+                tu = entity.get('tripUpdate', {})
+                if not tu or 'stopTimeUpdate' not in tu:
+                    continue
+                trip = tu.get('trip', {})
+                trip_id = str(trip.get('tripId')).strip()
+                route_id = trip.get('routeId') or self.meta.trips.get(trip_id, {}).get('route_id', 'UNK')
                 
-            trip = tu.get('trip', {})
-            trip_id = str(trip.get('tripId')).strip()
-            
-            # Step 1: Initialize metadata dictionary safely
-            meta = self.meta.trips.get(trip_id, {})
-            
-            # Step 2: Resolve the core route identifier string
-            route_id = trip.get('routeId') or meta.get('route_id')
-            
-            # Step 3: Parse route codes from the trip ID string if the feed fields are missing
-            if not route_id:
-                if '-' in trip_id:
-                    # Extracts 'SB' from 'SB-1650-W-W4' or 'ER' from 'ER-1234'
-                    route_id = trip_id.split('-')[0].upper().strip()
-                else:
-                    # Ultimate fallback check against the trip ID numerical patterns
-                    # Weekend / Seasonal index rules matching Soundview/Rockaway blocks
-                    route_id = "ER"
+                for update in tu['stopTimeUpdate']:
+                    raw_stop_id = str(update.get('stopId')).strip()
+                    if not raw_stop_id: continue
+                    
+                    stop_id = raw_stop_id[:-1] if raw_stop_id[-1] in ('N', 'S') else raw_stop_id
+                    raw_dir = raw_stop_id[-1] if raw_stop_id[-1] in ('N', 'S') else 'N'
+                    direction = 'Uptown' if raw_dir == 'N' else 'Downtown'
+                    
+                    arr_ts = update.get('arrival', {}).get('time')
+                    dep_ts = update.get('departure', {}).get('time')
+                    sort_time = arr_ts or dep_ts
+                    
+                    if sort_time:
+                        diff = float(sort_time) - now
+                        if 0 < diff < 1800:
+                            arr_diff = float(arr_ts) - now if arr_ts else None
+                            dep_diff = float(dep_ts) - now if dep_ts else None
+                            
+                            processed_subway_updates.append({
+                                'stop_id': stop_id,
+                                'route_id': route_id,
+                                'direction': direction,
+                                'time': diff,
+                                'time_seconds': int(round(diff)),
+                                'arrival_time_seconds': int(round(arr_diff)) if arr_diff is not None else None,
+                                'departure_time_seconds': int(round(dep_diff)) if dep_diff is not None else None,
+                                'source': 'subway',
+                                'next_stop': None,
+                                'terminal': direction
+                            })
 
-            # Step 4: Split ERA and ERB into explicit distinct column identifiers
-            # We do this by checking the specific trip identifier suffix matrix strings
-            trip_id_upper = trip_id.upper()
-            if route_id == "ER" or "ER-" in trip_id_upper:
-                if "-A" in trip_id_upper or "ERA" in trip_id_upper:
-                    route_id = "ERA"
-                elif "-B" in trip_id_upper or "ERB" in trip_id_upper:
-                    route_id = "ERB"
-                else:
-                    # Safely inspect the path configuration to tag variant patterns
-                    headsign = meta.get('headsign', '').upper()
-                    if "E 34" in headsign or "MIDTOWN" in headsign:
-                        # Map based on pathing destinations if available
-                        route_id = "ERA" if "-A" in trip_id_upper else "ERB"
-
-            # Normalize route codes to match your ArrivalCard color keys
-            route_id = route_id.strip().upper()
-            
-            direction_id = meta.get('direction_id', '0')
-            direction_symbol = 'I' if str(direction_id) == '1' else 'O'
-            terminal_name = meta.get('headsign', 'Unknown')
-
-            updates_list = tu['stopTimeUpdate']
-            for idx, update in enumerate(updates_list):
-                stop_id = str(update.get('stopId')).strip()
-                
-                tgt_time = update.get('arrival', {}).get('time') or update.get('departure', {}).get('time')
-                if not tgt_time: 
+            # ====================================================================
+            # 2. Parse Ferry Entities (O(1) Direct Lookup)
+            # ====================================================================
+            for entity in raw_ferry:
+                tu = entity.get('tripUpdate', {})
+                if not tu or 'stopTimeUpdate' not in tu:
                     continue
                 
-                time_diff = float(tgt_time) - now
+                trip_id = self.clean(tu.get('trip', {}).get('tripId', ''))
+                vehicle_id = self.clean(tu.get('vehicle', {}).get('id', 'N/A'))
+                vehicle_label = self.clean(tu.get('vehicle', {}).get('label', 'N/A'))
+                updates_list = tu.get('stopTimeUpdate', [])
                 
-                # Keep lookahead tracking window set to a spacious 60 minutes
-                if 0 <= time_diff < 3660:
-                    next_stop_name = None
-                    if idx + 1 < len(updates_list):
-                        next_sid = updates_list[idx + 1].get('stopId')
-                        next_stop_name = self.meta.stop_names.get(next_sid)
+                live_remaining_stops = [self.clean(u.get('stopId')) for u in updates_list if u.get('stopId')]
+                if not live_remaining_stops:
+                    continue
+                
+                live_dest = live_remaining_stops[-1]
+                
+                static_trip = self.meta.trips.get(trip_id)
+                
+                if static_trip:
+                    route = static_trip.get('route_id', 'ER')
+                    static_stops = self.meta.stops_by_trip.get(trip_id, [])
+                    static_dest = static_stops[-1]['stop_id'] if static_stops else live_dest
+                    final_dest_id = static_dest if live_dest == static_dest else live_dest
+                else:
+                    self._record_missed_trip()
+                    route = self.get_route_family_from_terminal(live_dest)
+                    final_dest_id = live_dest
 
-                    display_destination = next_stop_name if next_stop_name else terminal_name
+                if route == "ER":
+                    try:
+                        trip_num = int(trip_id) if trip_id.isdigit() else 0
+                        route_display = "ERA" if trip_num % 2 == 0 else "ERB"
+                    except ValueError:
+                        route_display = "ER"
+                else:
+                    route_display = route
+
+                if route_display in ["RES", "ROCK"]:
+                    route_display = "RS"
                     
-                    processed_ferry_updates.append({
-                        'stop_id': stop_id,
-                        'route_id': route_id,
-                        'direction': direction_symbol,
-                        'time': time_diff,
-                        'source': 'ferry',
-                        'next_stop': next_stop_name,
-                        'terminal': display_destination
-                    })
+                route_display = route_display.upper().strip()
+                dest_name = self.meta.stop_names.get(str(final_dest_id), f"Stop {final_dest_id}")
 
-        # 4. Group data matrices using Union-Find mapping tables
-        new_train_times = self._group_by_station(processed_subway_updates, 'subway_metadata/stops.txt', 'subway')
-        new_ferry_times = self._group_by_station(processed_ferry_updates, 'ferry_metadata/stops.txt', 'ferry')
+                for idx, update in enumerate(updates_list):
+                    stop_id = self.clean(update.get('stopId'))
+                    
+                    arr_ts = update.get('arrival', {}).get('time')
+                    dep_ts = update.get('departure', {}).get('time')
+                    sort_time = arr_ts or dep_ts
+                    
+                    if not sort_time:
+                        continue
+                    
+                    time_diff = float(sort_time) - now
+                    if 0 <= time_diff < 3900:
+                        arr_diff = float(arr_ts) - now if arr_ts else None
+                        dep_diff = float(dep_ts) - now if dep_ts else None
+                        
+                        next_stop_name = None
+                        if idx + 1 < len(live_remaining_stops):
+                            next_id = live_remaining_stops[idx+1]
+                            next_stop_name = self.meta.stop_names.get(next_id, f"Pier {next_id}")
+                            
+                        processed_ferry_updates.append({
+                            'stop_id': stop_id,
+                            'route_id': route_display,
+                            'vehicle_id': vehicle_id,
+                            'vehicle_label': vehicle_label,
+                            'direction': 'O', 
+                            'time': time_diff,
+                            'time_seconds': int(round(time_diff)),
+                            'arrival_time_seconds': int(round(arr_diff)) if arr_diff is not None else None,
+                            'departure_time_seconds': int(round(dep_diff)) if dep_diff is not None else None,
+                            'source': 'ferry',
+                            'next_stop': next_stop_name,
+                            'terminal': dest_name
+                        })
 
-        # 5. Atomic thread cache swap
-        with self.lock:
+            # ====================================================================
+            # 3. Group and Cache
+            # ====================================================================
+            new_train_times = self._group_by_station(processed_subway_updates, 'subway')
+            new_ferry_times = self._group_by_station(processed_ferry_updates, 'ferry')
+
             self.train_times_cache = new_train_times
             self.ferry_times_cache = new_ferry_times
 
-    def _group_by_station(self, updates, stops_file, source_type):
+    def _group_by_station(self, updates, source_type):
         grouped_dict = {}
-        
-        # Grid sorting maps for layout partitions
         subway_line_groups = {
             '123': ['1', '2', '3'],
             '456': ['4', '5', '6'],
@@ -199,7 +267,6 @@ class TransitEngine:
             'SIR': ['SI']
         }
 
-        # Initialize placeholder buckets for EVERY station to keep frontend selectors fully populated
         for master_id, name in self.meta.station_names.items():
             is_ferry_station = master_id.startswith("FERRY-")
             if (source_type == 'subway' and not is_ferry_station) or (source_type == 'ferry' and is_ferry_station):
@@ -210,7 +277,6 @@ class TransitEngine:
                     'all_updates': []
                 }
 
-        # Route platform-specific codes under master unified complexes via Union-Find maps
         for u in updates:
             raw_sid = u['stop_id']
             master_id = self.meta.merged_station_map.get(raw_sid)
@@ -219,9 +285,6 @@ class TransitEngine:
                 u['time'] = int(round(u['time']))
                 grouped_dict[master_id]['all_updates'].append(u)
 
-        # ====================================================================
-        # Final Horizontal Family Partitions & Column Split Generation
-        # ====================================================================
         final_list = []
         for master_id, sdata in grouped_dict.items():
             matched_updates = sorted(sdata['all_updates'], key=lambda x: x['time'])
@@ -238,12 +301,8 @@ class TransitEngine:
                 if misc:
                     lines_split['Other'] = misc
             else:
-                # FIX: Group ferry columns using the precise route_id we calculated upstream!
-                # This explicitly respects 'ERA' and 'ERB' instead of collapsing back to 'ER'
                 for update in matched_updates:
-                    # Pull the explicitly calculated route identifier key
                     r_id = update.get('route_id', 'Ferry').upper().strip()
-                    
                     if r_id not in lines_split:
                         lines_split[r_id] = []
                     lines_split[r_id].append(update)
@@ -254,7 +313,7 @@ class TransitEngine:
                 'station_id': clean_api_id,
                 'name': sdata['name'],
                 'source': source_type,
-                'lines': lines_split, # Pass the preserved split dictionary matrix
+                'lines': lines_split,
                 'trains': matched_updates
             })
 
