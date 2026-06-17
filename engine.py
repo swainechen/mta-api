@@ -129,8 +129,20 @@ class TransitEngine:
                 if not tu or 'stopTimeUpdate' not in tu:
                     continue
                 trip = tu.get('trip', {})
-                trip_id = str(trip.get('tripId')).strip()
-                route_id = trip.get('routeId') or self.meta.trips.get(trip_id, {}).get('route_id', 'UNK')
+                feed_trip_id = str(trip.get('tripId')).strip()
+
+                # The GTFS-RT feed uses shorter tripIds than the static data.
+                # Static data might have format "L0S1-1-1094-S02_123800_1..N15R"
+                # while feed provides "123800_1..N15R". Check for suffix match.
+                trip_info = self.meta.trips.get(feed_trip_id)
+                if not trip_info:
+                    # Try matching by suffix
+                    for static_trip_id, ti in self.meta.trips.items():
+                        if static_trip_id.endswith(feed_trip_id):
+                            trip_info = ti
+                            break
+
+                route_id = trip.get('routeId') or (trip_info.get('route_id') if trip_info else 'UNK')
                 
                 for update in tu['stopTimeUpdate']:
                     raw_stop_id = str(update.get('stopId')).strip()
@@ -150,6 +162,10 @@ class TransitEngine:
                             arr_diff = float(arr_ts) - now if arr_ts else None
                             dep_diff = float(dep_ts) - now if dep_ts else None
                             
+                            # Get the actual terminal station from trip headsign
+                            headsign = trip_info.get('headsign', '') if trip_info else ''
+                            terminal = headsign if headsign else direction
+
                             processed_subway_updates.append({
                                 'stop_id': stop_id,
                                 'route_id': route_id,
@@ -160,7 +176,7 @@ class TransitEngine:
                                 'departure_time_seconds': int(round(dep_diff)) if dep_diff is not None else None,
                                 'source': 'subway',
                                 'next_stop': None,
-                                'terminal': direction
+                                'terminal': terminal
                             })
 
             # ====================================================================
