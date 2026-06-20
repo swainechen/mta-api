@@ -199,12 +199,13 @@ class TransitEngine:
                 live_dest = live_remaining_stops[-1]
                 
                 static_trip = self.meta.trips.get(trip_id)
+                static_stops = []
                 
                 if static_trip:
                     route = static_trip.get('route_id', 'ER')
                     static_stops = self.meta.stops_by_trip.get(trip_id, [])
-                    static_dest = static_stops[-1]['stop_id'] if static_stops else live_dest
-                    final_dest_id = static_dest if live_dest == static_dest else live_dest
+                    static_dest = static_stops[-1]['stop_id'] if static_stops else None
+                    final_dest_id = live_dest if live_dest else static_dest
                 else:
                     self._record_missed_trip()
                     route = self.get_route_family_from_terminal(live_dest)
@@ -243,7 +244,14 @@ class TransitEngine:
                         next_stop_name = None
                         if idx + 1 < len(live_remaining_stops):
                             next_id = live_remaining_stops[idx+1]
-                            next_stop_name = self.meta.stop_names.get(next_id, f"Pier {next_id}")
+                            next_stop_name = self.meta.stop_names.get(next_id, f"Stop {next_id}")
+                        elif static_stops:
+                            for stop_index, stop_entry in enumerate(static_stops):
+                                if self.clean(stop_entry.get('stop_id')) == stop_id:
+                                    if stop_index + 1 < len(static_stops):
+                                        next_id = static_stops[stop_index + 1]['stop_id']
+                                        next_stop_name = self.meta.stop_names.get(next_id, f"Stop {next_id}")
+                                    break
                             
                         processed_ferry_updates.append({
                             'stop_id': stop_id,
