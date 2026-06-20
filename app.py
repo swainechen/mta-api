@@ -71,22 +71,33 @@ def next_all(station_id):
 def stops():
     with transit_engine.lock:
         combined = transit_engine.train_times_cache + transit_engine.ferry_times_cache
-        
+
         station_list = []
         for s in combined:
             # Extract the pure structural master identifier from the complex string key
             # (e.g., converts 'SUBWAY-COMPLEX-229' -> '229' or 'FERRY-STATION-87' -> '87')
             raw_id = s['station_id'].split('-')[-1]
-            
+
+            # Build line label for display in dropdown
+            # e.g., "G" or "123/456/ACE/JZ"
+            lines_dict = s.get('lines', {})
+            source = s.get('source', 'subway')
+            if lines_dict:
+                line_labels = sorted(lines_dict.keys())
+                line_label = '/'.join(line_labels)
+            else:
+                line_label = None
+
             station_list.append({
                 # 1. Keep this compound string key unique to keep the React option keys happy
                 'station_id': f"{s.get('source', 'subway')}-{s['station_id']}",
                 # 2. Hand over the clean, raw identifier string the tracking loops expect
                 'raw_id': raw_id,
                 'name': s['name'],
-                'source': s.get('source', 'subway')
+                'source': s.get('source', 'subway'),
+                'line_label': line_label
             })
-            
+
         return jsonify(station_list)
 
 if __name__ == "__main__":

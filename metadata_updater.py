@@ -5,7 +5,7 @@ import hashlib
 import tempfile
 import zipfile
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import requests
 
 # Configure logging
@@ -13,6 +13,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 
 # Configuration
 DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), 'static_metadata'))
+
+# File to track last update date (in NYC time)
+LAST_UPDATE_FILE = os.path.join(DATA_DIR, '.last_update_date.txt')
 FEEDS = {
     'ferry': 'https://nycferry.connexionz.net/rtt/public/utility/gtfs.aspx',
     'subway': 'https://rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip'
@@ -92,6 +95,41 @@ class MetadataUpdater:
         os.rename(temp_symlink, symlink_path)
         logging.info(f"[{name}] Symlink updated to point to {os.path.basename(new_target_dir)}")
 
+    def _get_nyc_date(self):
+        """Get current date in NYC (America/New_York) timezone."""
+        now_utc = datetime.now(timezone.utc)
+        try:
+            from zoneinfo import ZoneInfo
+            nyc_time = now_utc.astimezone(ZoneInfo('America/New_York'))
+        except ImportError:
+            # Python < 3.9: use a 4-hour offset (EDT) which is correct for half the year
+            # or simply fall back to UTC date if zoneinfo isn't available
+            import pytz
+            nyc_time = now_utc.astimezone(pytz.timezone("America/New_York"))
+        return nyc_time.date()
+
+    def _has_updated_today(self):
+        """Check if metadata has already been updated today (in NYC time)."""
+        try:
+            if not os.path.exists(LAST_UPDATE_FILE):
+                return False
+            with open(LAST_UPDATE_FILE, 'r') as f:
+                last_date = f.read().strip()
+                if last_date:
+                    return last_date == str(self._get_nyc_date())
+            return False
+        except Exception as e:
+            logging.warning(f"Error checking last update date: {e}")
+            return False
+
+    def _record_update_today(self):
+        """Record that an update has been run today."""
+        try:
+            with open(LAST_UPDATE_FILE, 'w') as f:
+                f.write(str(self._get_nyc_date()))
+        except Exception as e:
+            logging.warning(f"Error recording update date: {e}")
+
     def cleanup_old_versions(self, name):
         """Delete old timestamped directories to prevent disk bloat."""
         all_dirs = [d for d in os.listdir(self.data_dir) if d.startswith(f"{name}_20") and os.path.isdir(os.path.join(self.data_dir, d))]
@@ -128,10 +166,19 @@ class MetadataUpdater:
             os.remove(zip_path)
 
     def run_all(self):
+        """Run the update cycle, but only if today's update hasn't been done yet (NYC time)."""
+        # Check if we've already updated today (in NYC time)
+        if self._has_updated_today():
+            logging.info("Metadata update already run today (NYC time). Skipping update.")
+            return
+
         logging.info("Starting GTFS Metadata Update Cycle...")
         for name, url in FEEDS.items():
             self.update_feed(name, url)
         logging.info("Update Cycle Complete.")
+
+        # Record that we've updated today
+        self._record_update_today()
 
 if __name__ == "__main__":
     updater = MetadataUpdater(DATA_DIR)
