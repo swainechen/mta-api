@@ -1,8 +1,10 @@
+import datetime as dt
 import os
 import time
 import threading
 import subprocess
 import requests
+import zoneinfo
 from google.transit import gtfs_realtime_pb2
 from google.protobuf.json_format import MessageToDict
 
@@ -52,6 +54,7 @@ class TransitEngine:
 
     def _record_missed_trip(self):
         """Hook to trigger the external metadata updater if static data goes stale."""
+        print(f"Missed trips: {self.missed_trips}")
         self.missed_trips += 1
         if self.missed_trips >= 5:
             now = time.time()
@@ -135,15 +138,68 @@ class TransitEngine:
                 # Static data might have format "L0S1-1-1094-S02_123800_1..N15R"
                 # while feed provides "123800_1..N15R". Check for suffix match.
                 trip_info = self.meta.trips.get(feed_trip_id)
+                static_trip_id = None
+                num_matches = 0
+                best_match = None
+                last_match = None
                 if not trip_info:
-                    # Try matching by suffix
-                    for static_trip_id, ti in self.meta.trips.items():
-                        if static_trip_id.endswith(feed_trip_id):
+                    for static_trip_id_inner, ti in self.meta.trips.items():
+                        if static_trip_id_inner.endswith(feed_trip_id):
+                            # Try matching by suffix
                             trip_info = ti
+                            static_trip_id = static_trip_id_inner
                             break
+                        else:
+                            # RT feed has 129600_SI..S and trips.txt has
+                            # - SIR-FA2017-SI017-Weekday-08_129600_SI..S03R
+                            # - SIR-SP2026-SI017-Saturday-00_129600_SI..S03R
+                            # - SIR-SP2026-SI017-Sunday-00_129600_SI..S03R
+                            two_fields = static_trip_id_inner.split(
+                                "_", maxsplit=1
+                            )
+                            if (
+                                len(two_fields) > 1 and
+                                two_fields[1].startswith(feed_trip_id)
+                            ):
+                                num_matches += 1
+                                last_match = static_trip_id_inner
+                                dow_maybe = two_fields[0].split("-")[-2]
+                                today_dow = dt.datetime.now(tz=zoneinfo.ZoneInfo("America/New_York")).weekday()
+                                if (
+                                    dow_maybe == "Saturday" and today_dow == 5
+                                ) or (
+                                    dow_maybe == "Sunday" and today_dow == 6
+                                ) or (
+                                    dow_maybe == "Weekday" and today_dow <= 4
+                                ):
+                                    best_match = static_trip_id_inner
+                    if best_match:
+                        static_trip_id = best_match
+                    elif last_match:
+                        static_trip_id = last_match
+                if not static_trip_id:
+                    # This just isn't an issue for the subway feed since the
+                    # RT feed has the full set of stations that train is going
+                    # to visit, so we don't record missing stations
+                    continue
 
                 route_id = trip.get('routeId') or (trip_info.get('route_id') if trip_info else 'UNK')
                 
+                # The feed usually gives the full set of stops
+                # Because we want the terminus in every upate, we end up
+                # traversing two times here...
+                max_ts = 0
+                rt_feed_terminus = None
+                for update in tu["stopTimeUpdate"]:
+                    arr_ts = update.get("arrival", {}).get("time")
+                    if arr_ts:
+                        arr_ts_numeric = float(arr_ts)
+                        if arr_ts_numeric > max_ts:
+                            max_ts = arr_ts_numeric
+                            update_stopid = update.get("stopId")
+                            if update_stopid and update_stopid in self.meta.stop_names:
+                                rt_feed_terminus = self.meta.stop_names[update_stopid]
+
                 for update in tu['stopTimeUpdate']:
                     raw_stop_id = str(update.get('stopId')).strip()
                     if not raw_stop_id: continue
@@ -164,7 +220,7 @@ class TransitEngine:
                             
                             # Get the actual terminal station from trip headsign
                             headsign = trip_info.get('headsign', '') if trip_info else ''
-                            terminal = headsign if headsign else direction
+                            terminal = rt_feed_terminus if rt_feed_terminus else headsign if headsign else direction
 
                             processed_subway_updates.append({
                                 'stop_id': stop_id,
@@ -176,7 +232,9 @@ class TransitEngine:
                                 'departure_time_seconds': int(round(dep_diff)) if dep_diff is not None else None,
                                 'source': 'subway',
                                 'next_stop': None,
-                                'terminal': terminal
+                                'terminal': terminal,
+                                'static_trip_id': static_trip_id,
+                                'feed_trip_id': feed_trip_id,
                             })
 
             # ====================================================================
@@ -265,7 +323,9 @@ class TransitEngine:
                             'departure_time_seconds': int(round(dep_diff)) if dep_diff is not None else None,
                             'source': 'ferry',
                             'next_stop': next_stop_name,
-                            'terminal': dest_name
+                            'terminal': dest_name,
+                            'static_trip_id': trip_id if static_trip else None,
+                            'feed_trip_id': trip_id,
                         })
 
             # ====================================================================

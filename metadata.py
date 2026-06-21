@@ -147,3 +147,11 @@ class TransitMetadata:
                 self.stops_by_trip[tid] = sorted(stops, key=lambda x: x['stop_sequence'])
                 
         print(f"Static Union-Find generation complete. Indexed {len(self.station_names)} unified complexes.")
+
+    def update_trip_id(trip_id, route_id, direction_id, headsign):
+        if trip_id in self.trips:
+            self.trips[trip_id] = {
+                'route_id': self._clean(route_id),
+                'direction_id': self._clean(direction_id, '0'),
+                'headsign': self._clean(headsign, ''),
+            }
