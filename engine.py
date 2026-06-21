@@ -181,7 +181,7 @@ class TransitEngine:
                     # This just isn't an issue for the subway feed since the
                     # RT feed has the full set of stations that train is going
                     # to visit, so we don't record missing stations
-                    continue
+                    pass
 
                 route_id = trip.get('routeId') or (trip_info.get('route_id') if trip_info else 'UNK')
                 
