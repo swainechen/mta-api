@@ -97,7 +97,9 @@ class MetadataUpdater:
         logging.info(f"[{name}] Symlink updated to point to {os.path.basename(new_target_dir)}")
 
     def _has_updated_recently(self):
-        """Check if metadata has already been updated today (in NYC time)."""
+        """Check if metadata has already been updated recently.
+        Returns True if the last update happened within the COOLDOWN window.
+        """
         try:
             if not os.path.exists(LAST_UPDATE_FILE):
                 return False
@@ -105,7 +107,8 @@ class MetadataUpdater:
             with open(LAST_UPDATE_FILE, 'r') as f:
                 last_timestamp = f.read().strip()
                 if last_timestamp:
-                    return datetime.fromisoformat(last_timestamp) + COOLDOWN <= now_utc
+                    # Return True if (now - last_update) is LESS than the cooldown
+                    return now_utc - datetime.fromisoformat(last_timestamp) < COOLDOWN
             return False
         except Exception as e:
             logging.warning(f"Error checking last update date: {e}")

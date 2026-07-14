@@ -5,6 +5,7 @@ class TransitMetadata:
     def __init__(self, data_dir=None):
         self.trips = {}              # trip_id -> {route_id, direction_id, headsign}
         self.stop_names = {}         # stop_id -> stop_name
+        self.route_names = {}        # route_id -> route_long_name
         self.stops_by_trip = {}      # trip_id -> list of {'stop_id', 'arrival_seconds'}
         self.merged_station_map = {} # raw_stop_id -> master_parent_id
         self.station_names = {}      # master_parent_id -> unified_combined_name
@@ -37,6 +38,17 @@ class TransitMetadata:
             return None
 
     def load_all(self):
+        # 0. Load Route Names
+        for feed_type, folder_path in self.directories.items():
+            path = os.path.join(folder_path, 'routes.txt')
+            if os.path.exists(path):
+                with open(path, mode='r', encoding='utf-8-sig') as f:
+                    for row in csv.DictReader(f):
+                        rid = self._clean(row.get('route_id'))
+                        name = self._clean(row.get('route_long_name'))
+                        if rid:
+                            self.route_names[rid] = name
+
         # 1. Load Trips
         for feed_type, folder_path in self.directories.items():
             path = os.path.join(folder_path, 'trips.txt')

@@ -38,25 +38,38 @@ def all_times():
 @app.route('/api/times/<station_id>')
 def next_all(station_id):
     station_id_clean = str(station_id).strip()
-    
+
     with transit_engine.lock:
+        # 1. Handle compound identifiers (e.g., 'subway-138' or 'ferry-138')
+        if station_id_clean.startswith('subway-'):
+            clean_id = station_id_clean.replace('subway-', '')
+            matched_station = next((s for s in transit_engine.train_times_cache if s['station_id'] == clean_id), None)
+            if matched_station:
+                return jsonify([matched_station])
+
+        elif station_id_clean.startswith('ferry-'):
+            clean_id = station_id_clean.replace('ferry-', '')
+            matched_station = next((s for s in transit_engine.ferry_times_cache if s['station_id'] == clean_id), None)
+            if matched_station:
+                return jsonify([matched_station])
+
+        # 2. Fallback for raw numeric IDs or legacy lookups
         combined = transit_engine.train_times_cache + transit_engine.ferry_times_cache
-        
-        # 1. Look for a pure, direct cache identifier match
+
+        # Look for a pure, direct cache identifier match
         matched_station = next((s for s in combined if s['station_id'] == station_id_clean), None)
-        
-        # 2. Try matching against the suffix of the complex key (e.g. matching '87' to 'FERRY-STATION-87')
+
+        # Try matching against the suffix of the complex key (e.g. matching '87' to 'FERRY-STATION-87')
         if not matched_station:
             matched_station = next((s for s in combined if s['station_id'].endswith(f"-{station_id_clean}")), None)
-            
-        # 3. Dynamic reverse lookup: If the frontend sends a full master ID string, match it by suffix
+
+        # Dynamic reverse lookup: If the frontend sends a full master ID string, match it by suffix
         if not matched_station:
             matched_station = next((s for s in combined if station_id_clean.endswith(f"-{s['station_id']}")), None)
-            
+
         if matched_station:
-            # Return wrapped inside an array block to ensure cross-version compatibility
             return jsonify([matched_station])
-            
+
     # Fallback skeleton framework object safe containment
     station_name = meta_store.stop_names.get(station_id_clean, f"Station {station_id_clean}")
     return jsonify([{
