@@ -152,7 +152,8 @@ class TransitMetadata:
                             raw_sequences[tid].append({
                                 'stop_id': sid,
                                 'stop_sequence': int(seq_str),
-                                'arrival_seconds': secs
+                                'arrival_seconds': secs,
+                                'departure_seconds': self._time_to_seconds(row.get('departure_time'))
                             })
             
             for tid, stops in raw_sequences.items():
