@@ -300,10 +300,21 @@ class TransitEngine:
 
                 current_offset = 0
                 if first_live_idx >= 0:
-                    sched_arr = static_stops[first_live_idx].get('arrival_seconds')
-                    if sched_arr is not None:
+                    stop_entry = static_stops[first_live_idx]
+                    sched_dep = stop_entry.get('departure_seconds')
+                    sched_arr = stop_entry.get('arrival_seconds')
+
+                    # Use departure as the anchor to account for dwell time
+                    if sched_dep is not None:
+                        first_live_scheduled = today_midnight + sched_dep
+                        first_live_actual = float(live_stops[0].get('departure') or live_stops[0].get('arrival') or 0)
+                    elif sched_arr is not None:
                         first_live_scheduled = today_midnight + sched_arr
                         first_live_actual = float(live_stops[0].get('arrival') or live_stops[0].get('departure') or 0)
+                    else:
+                        first_live_scheduled = first_live_actual = None
+
+                    if first_live_scheduled is not None and first_live_actual > 0:
                         current_offset = first_live_actual - first_live_scheduled
 
                 live_lookup = {ls['stop_id']: ls for ls in live_stops}
@@ -345,25 +356,28 @@ class TransitEngine:
                         stop_entry = static_stops[stop_idx]
                         stop_id = self.clean(stop_entry.get('stop_id'))
                         sched_arr_secs = stop_entry.get('arrival_seconds')
+                        sched_dep_secs = stop_entry.get('departure_seconds')
                         if sched_arr_secs is None: continue
 
-                        scheduled_unix = today_midnight + sched_arr_secs
+                        sched_arr_unix = today_midnight + sched_arr_secs
+                        sched_dep_unix = today_midnight + sched_dep_secs if sched_dep_secs is not None else sched_arr_unix + 60
                         rt_stop = live_lookup.get(stop_id)
 
                         if rt_stop:
-                            actual_time = float(rt_stop.get('arrival') or rt_stop.get('departure') or 0)
-                            if actual_time > 0:
-                                current_offset = actual_time - scheduled_unix
+                            # Update offset using departure as anchor
+                            actual_dep = float(rt_stop.get('departure') or rt_stop.get('arrival') or 0)
+                            if actual_dep > 0:
+                                current_offset = actual_dep - sched_dep_unix
 
-                            arr = rt_stop.get('arrival') or (scheduled_unix + current_offset)
-                            dep = rt_stop.get('departure') or (scheduled_unix + current_offset + 60)
+                            arr = rt_stop.get('arrival') or (sched_arr_unix + current_offset)
+                            dep = rt_stop.get('departure') or (sched_dep_unix + current_offset)
                         else:
                             effective_offset = current_offset
                             if not self.PROPAGATE_EARLY_OFFSETS and current_offset < 0:
                                 effective_offset = 0
 
-                            arr = scheduled_unix + effective_offset
-                            dep = arr + 60
+                            arr = sched_arr_unix + effective_offset
+                            dep = sched_dep_unix + effective_offset
 
                         time_diff = float(arr) - now
                         if 0 <= time_diff < 3900:
